@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import secrets
 from tempfile import TemporaryDirectory
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 import time
 from typing import Literal
 
@@ -22,7 +22,15 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import httpx
 
-from . import adapters, codex_cli, credentials, editorial, media, models as m
+from . import (
+    adapters,
+    codex_cli,
+    credentials,
+    editorial,
+    media,
+    thumbnails,
+    models as m,
+)
 from .codex_login import DeviceLogin
 from .store import RuleError, encode
 from .workbench import Workbench
@@ -128,6 +136,7 @@ def create_app(
     sessions = {}
     sessions_lock = Lock()
     limiter = RateLimit()
+    thumbnail_render = BoundedSemaphore()
     codex_login = DeviceLogin() if public_login else None
 
     @asynccontextmanager
@@ -484,6 +493,31 @@ def create_app(
         if not 1 <= len(body.versions) <= 100:
             raise RuleError("Review 1 to 100 versions", 422)
         return store.review(actor, pid, body.versions, body)
+
+    @app.post("/api/projects/{pid}/thumbnails", status_code=201)
+    def generate_thumbnails(
+        pid: m.Id, body: thumbnails.Batch, actor=Depends(authenticated)
+    ):
+        if not thumbnail_render.acquire(blocking=False):
+            raise HTTPException(
+                429, "A thumbnail batch is rendering. Try again shortly."
+            )
+        try:
+            return {
+                "variants": thumbnails.generate(store, worker.root, actor, pid, body)
+            }
+        finally:
+            thumbnail_render.release()
+
+    @app.get("/api/projects/{pid}/thumbnails/bundle")
+    def download_thumbnails(pid: m.Id, actor=Depends(authenticated)):
+        return Response(
+            thumbnails.bundle(store, worker.root, actor, pid),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": 'attachment; filename="hyphotenic-thumbnails.zip"'
+            },
+        )
 
     @app.get("/api/providers")
     def providers(request: Request, actor=Depends(authenticated)):

@@ -20,9 +20,10 @@ from app.utils.subtitle_writer import write_subtitle_file
 MAX_IMAGE = 12 * 1024 * 1024
 MAX_AUDIO = 40 * 1024 * 1024
 MAX_VIDEO = 200 * 1024 * 1024
-SAFE_NAME = re.compile(r"^[a-f0-9]{32}\.(png|wav|mp4|srt)$")
+SAFE_NAME = re.compile(r"^[a-f0-9]{32}\.(png|jpg|wav|mp4|srt)$")
 FORMATS = {
     "png": "image/png",
+    "jpg": "image/jpeg",
     "wav": "audio/wav",
     "mp4": "video/mp4",
     "srt": "text/plain; charset=utf-8",

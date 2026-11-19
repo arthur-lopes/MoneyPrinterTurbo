@@ -200,11 +200,14 @@ class Store:
                 if self.order(db, pid) != dep["order"]:
                     return False
                 continue
-            if "style" in dep:
+            if "style" in dep or "style_aspect" in dep:
                 row = db.execute(
                     "SELECT data FROM projects WHERE id=?", (pid,)
                 ).fetchone()
-                if unpack(row, "data")["data"]["style"] != dep["style"]:
+                style = unpack(row, "data")["data"]["style"]
+                if "style" in dep and style != dep["style"]:
+                    return False
+                if "style_aspect" in dep and style["aspect"] != dep["style_aspect"]:
                     return False
                 continue
             if "speech" in dep:

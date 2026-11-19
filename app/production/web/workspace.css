@@ -63,6 +63,13 @@ details { min-width: 0; }
 summary { cursor: pointer; padding: .28rem 0; color: var(--accent); }
 img, video, audio { width: 100%; display: block; border-radius: .4rem; }
 img, video { max-height: 28rem; object-fit: contain; background: #101517; }
+.thumbnail-tile { max-width: 100%; }
+.thumbnail-tile img { max-height: 25rem; }
+.thumbnail-video-title { margin: .4rem 0 0; font-size: .92rem; line-height: 1.25; }
+.thumbnail-compact .thumbnail-tile { max-width: 180px; }
+.thumbnail-compact .thumbnail-video-title {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
 pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: .65rem; background: #12191b; border-radius: .4rem; }
 dt { color: var(--muted); }
 dd { margin: 0 0 .55rem; overflow-wrap: anywhere; }

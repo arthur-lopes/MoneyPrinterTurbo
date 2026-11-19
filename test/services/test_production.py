@@ -7,6 +7,7 @@ import json
 from threading import Event
 from uuid import uuid4
 import wave
+from zipfile import ZipFile
 
 import av
 from fastapi.testclient import TestClient
@@ -184,6 +185,90 @@ def test_editorial_files_are_private_and_create_idempotent_draft_projects(tmp_pa
         assert project["data"]["editorial"]["id"] == "W01"
         assert project["data"]["style"]["aspect"] == "9:16"
         assert project["data"]["defaults"]["translation"] == "codex"
+
+
+def test_thumbnail_drafts_bundle_and_owner_access(tmp_path):
+    token, other_token = "a" * 32, "b" * 32
+    app = create_app(
+        tmp_path,
+        {token: "alice", other_token: "bob"},
+        worker_enabled=False,
+        allowed_hosts=("testserver",),
+    )
+    alice = {"Authorization": f"Bearer {token}"}
+    bob = {"Authorization": f"Bearer {other_token}"}
+    project = {
+        "title": "A quiet network",
+        "topic": "A network outage",
+        "audience": "General",
+    }
+    with TestClient(app) as client:
+        pid = client.post("/api/projects", headers=alice, json=project).json()["id"]
+        base = f"/api/projects/{pid}"
+        canvas = BytesIO()
+        Image.new("RGB", (320, 180), "#3d6d8f").save(canvas, format="PNG")
+        asset = client.post(
+            base + "/uploads?kind=reference&title=Network",
+            headers=alice,
+            content=canvas.getvalue(),
+        ).json()
+        options = {
+            "variants": [
+                {"concept": "impact", "headline": "NO REPLY", "source": asset["id"]},
+                {"concept": "contrast", "headline": "THEN OR NOW?"},
+                {"concept": "detail", "source": asset["id"]},
+            ]
+        }
+        endpoint = base + "/thumbnails"
+        assert client.post(endpoint, headers=bob, json=options).status_code == 404
+        assert client.post(endpoint, headers=alice, json=options).status_code == 422
+        response = client.post(
+            base + "/reviews",
+            headers=alice,
+            json={"versions": [asset["id"]], "status": "APPROVED"},
+        )
+        assert response.status_code == 200
+        generated = client.post(endpoint, headers=alice, json=options)
+        assert generated.status_code == 201, generated.text
+        results = generated.json()["variants"]
+        assert [v["status"] for v in results] == ["AWAITING_REVIEW"] * 3
+        assert (
+            client.post(endpoint, headers=alice, json=options).json()["variants"]
+            == results
+        )
+        download = client.get(endpoint + "/bundle", headers=alice)
+        assert download.headers["content-type"] == "application/zip"
+        assert client.get(endpoint + "/bundle", headers=bob).status_code == 404
+        with ZipFile(BytesIO(download.content)) as bundle:
+            pictures = [
+                bundle.read(name) for name in bundle.namelist() if name.endswith(".jpg")
+            ]
+            assert len(set(pictures)) == 3
+            for picture in pictures:
+                with Image.open(BytesIO(picture)) as image:
+                    assert image.format == "JPEG" and image.size == (3840, 2160)
+                assert len(picture) < 2_000_000
+        result = results[0]
+        assert (
+            client.get(result["url"], headers=alice).headers["content-type"]
+            == "image/jpeg"
+        )
+        assert (
+            client.put(
+                base + "/style", headers=alice, json={"aspect": "9:16"}
+            ).status_code
+            == 200
+        )
+        assert client.get(endpoint + "/bundle", headers=alice).status_code == 404
+        replacement = client.post(endpoint, headers=alice, json=options).json()[
+            "variants"
+        ][0]
+        assert replacement["id"] != result["id"] and replacement["seq"] == 2
+        assert (replacement["data"]["width"], replacement["data"]["height"]) == (
+            2160,
+            3840,
+        )
+        assert client.get(result["url"], headers=alice).status_code == 200
 
 
 def test_graphic_quote_uses_reviewed_scene_and_fixed_template(sandbox, monkeypatch):

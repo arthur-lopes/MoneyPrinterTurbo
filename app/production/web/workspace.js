@@ -15,6 +15,7 @@ const navLabels = {
   dashboard: ["Dashboard", "Painel"], projects: ["Projects", "Projetos"], research: ["Research", "Pesquisa"],
   scripts: ["Scripts", "Roteiros"], storyboard: ["Storyboard", "Storyboard"], scenes: ["Scene generation", "Geração de cenas"],
   narration: ["Narration", "Narração"], timeline: ["Timeline", "Linha do tempo"], assets: ["Asset library", "Biblioteca"],
+  thumbnails: ["Thumbnails", "Miniaturas"],
   costs: ["Cost analytics", "Custos"], providers: ["Providers", "Provedores"], settings: ["Settings", "Configurações"],
 };
 const states = {
@@ -195,7 +196,8 @@ async function quote(jobs) {
 function mediaPreview(item) {
   if (!item?.url) return null;
   if (item.kind === "captions") return null;
-  if (["image", "reference"].includes(item.kind)) return node("img", {src: item.url, alt: item.data.title || tr("Storyboard preview", "Prévia do storyboard"), loading: "lazy"});
+  if (["image", "reference", "thumbnail"].includes(item.kind)) return node("img", {
+    src: item.url, alt: item.data.title || item.data.headline || tr("Image preview", "Prévia da imagem"), loading: "lazy"});
   const tag = ["voice", "audio"].includes(item.kind) ? "audio" : "video";
   return node(tag, {src: item.url, controls: true, preload: "metadata", playsinline: true});
 }
@@ -827,6 +829,72 @@ function jobsTable() {
     }), !project.jobs.length && small(tr("No jobs yet", "Nenhum trabalho ainda")));
 }
 
+const thumbnailConcepts = {
+  impact: ["A · Main consequence", "A · Consequência principal"],
+  contrast: ["B · Visual contrast", "B · Contraste visual"],
+  detail: ["C · Curiosity detail", "C · Detalhe intrigante"],
+};
+
+function thumbnailsView() {
+  const vertical = project.data.style.aspect === "9:16";
+  const language = project.data.languages[0];
+  const videoTitle = current("timeline")?.data.metadata?.[language]?.title || project.data.title;
+  const references = project.versions.filter(v => v.current && ready(v) && ["reference", "image"].includes(v.kind));
+  const imageOptions = [["", tr("Built-in graphic", "Arte gráfica local")], ...references.map(v => [
+    v.id, v.data.title || sceneData(v.slot.split("/")[1])?.data.title || v.slot,
+  ])];
+  const cards = [];
+  const previews = grid();
+  const forms = Object.entries(thumbnailConcepts).map(([concept, labels], index) => {
+    const slot = "thumbnail/" + concept;
+    const saved = current(slot);
+    const text = input(saved?.data.headline ?? (index === 0 ? project.data.editorial?.thumbnail_text || "" : ""), {maxlength: 64});
+    const source = select(imageOptions, saved ? (saved.data.source || "") : (references[0]?.id || ""));
+    const secondary = select(imageOptions, saved?.data.comparison || "");
+    const focal = select([["left", tr("Left", "Esquerda")], ["center", tr("Center", "Centro")], ["right", tr("Right", "Direita")]], saved?.data.focal || "center");
+    const accent = select([["mint", tr("Mint", "Menta")], ["amber", tr("Amber", "Âmbar")], ["blue", tr("Blue", "Azul")]],
+      saved?.data.accent || ["mint", "amber", "blue"][index]);
+    if (saved) {
+      previews.append(card(row(node("h2", {}, tr(...labels)), assetBadge(saved)),
+        node("div", {class: "thumbnail-tile"},
+          node("img", {src:saved.url, alt:saved.data.headline || tr(...labels)}),
+          node("p", {class: "thumbnail-video-title"}, videoTitle)),
+        row(node("a", {href:saved.url + "?attachment=true", download:true}, tr("Download JPG", "Baixar JPG")),
+          reviewControls(saved)),
+        revisions(slot)));
+    }
+    cards.push(card(node("h2", {}, tr(...labels)), label(tr("Short headline (optional)", "Texto curto (opcional)"), text),
+      label(tr("Main image", "Imagem principal"), source),
+      concept === "contrast" && label(tr("Comparison image", "Imagem de comparação"), secondary),
+      row(label(tr("Crop focus", "Foco do recorte"), focal), label(tr("Accent", "Cor de destaque"), accent))));
+    return () => ({concept, headline:text.value, source:source.value || null,
+      comparison:concept === "contrast" ? secondary.value || null : null, focal:focal.value, accent:accent.value});
+  });
+  const canBundle = Object.keys(thumbnailConcepts).some(concept => {
+    const item = current("thumbnail/" + concept);
+    return item?.fresh && ["APPROVED", "AWAITING_REVIEW"].includes(item.status);
+  });
+  const mobile = input("", {type: "checkbox"});
+  mobile.addEventListener("change", () => previews.classList.toggle("thumbnail-compact", mobile.checked));
+  return stack(title(tr("Thumbnails", "Miniaturas"),
+    canBundle && node("a", {href:path("/thumbnails/bundle"), download:true}, tr("Download options ZIP", "Baixar opções em ZIP"))),
+    node("p", {class: "muted"}, vertical
+      ? tr("Compare three vertical covers and choose one manually. Upload it in YouTube Studio on desktop when the option is available for your channel.",
+          "Compare três capas verticais e escolha uma manualmente. Envie pelo YouTube Studio no computador quando a opção estiver disponível no seu canal.")
+      : tr("Test different visual ideas with the same video title in YouTube Studio. Compare by watch time and check that the opening delivers the thumbnail’s promise.",
+          "Teste ideias visuais diferentes com o mesmo título no YouTube Studio. Compare pelo tempo de exibição e confira se a abertura entrega o que a miniatura promete.")),
+    previews.childElementCount > 0 && stack(label(tr("Compare at mobile size", "Comparar no tamanho de celular"), mobile), previews),
+    grid(...cards),
+    row(button(tr("Generate 3 drafts", "Gerar 3 opções"), async () => {
+      await mutate(path("/thumbnails"), "POST", {variants: forms.map(read => read())});
+      notify(tr("Thumbnail drafts saved for review", "Miniaturas salvas para revisão"));
+    }, true)),
+    node("p", {class:"muted"}, tr("Use one focal point, readable text, and a visual that matches the video.",
+      "Use um ponto focal claro, texto legível e uma imagem que combine com o vídeo.")),
+    node("a", {href: vertical ? "https://support.google.com/youtube/answer/72431" : "https://support.google.com/youtube/answer/16391400",
+      target:"_blank", rel:"noopener noreferrer"}, tr("YouTube Studio guide", "Guia do YouTube Studio")));
+}
+
 function assetView() {
   const kind = select([["reference", tr("Reference image", "Imagem de referência")], ["audio", tr("Music or sound effect", "Trilha ou efeito sonoro")]]);
   const filename = input("", {type: "file", accept: "image/png,image/jpeg,image/webp,audio/wav,audio/mpeg,audio/flac"});
@@ -1067,7 +1135,7 @@ function render() {
     return;
   }
   const views = {dashboard, projects: projectsView, research: researchView, scripts: scriptsView, storyboard: storyboardView,
-    scenes: scenesView, narration: narrationView, timeline: timelineView, assets: assetView, costs: costsView, settings: settingsView};
+    scenes: scenesView, narration: narrationView, timeline: timelineView, thumbnails: thumbnailsView, assets: assetView, costs: costsView, settings: settingsView};
   ui("workspace").replaceChildren(views[page]());
 }
 
