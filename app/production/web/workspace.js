@@ -548,6 +548,38 @@ function motionCueEditor(initial, changed = () => {}) {
   return {element: stack(fields, add), cues};
 }
 
+function evidenceGraphicEditor(section) {
+  const graphic = section.evidence_graphic ? structuredClone(section.evidence_graphic) : {
+    layout: "", labels: ["", ""], annotation: "", reveal_at: Math.min(1, Math.max(0, section.seconds - .1)),
+  };
+  const types = [["", tr("Visual guide", "Guia visual")], ["sequence", tr("Before and after", "Ordem de chegada")],
+    ["alignment", tr("Aligned records", "Registros alinhados")], ["coupling", tr("Moving cause and response", "Causa e resposta em movimento")],
+    ["routes", tr("Alternative paths", "Caminhos alternativos")]];
+  const layout = select(types, graphic.layout);
+  const controls = stack();
+  const storeGraphic = () => {
+    if (graphic.layout) section.evidence_graphic = graphic;
+    else delete section.evidence_graphic;
+  };
+  function fields() {
+    controls.replaceChildren();
+    if (!graphic.layout) return;
+    controls.append(row(...graphic.labels.map((value, index) => label(
+      index ? tr("Second label", "Segundo rótulo") : tr("First label", "Primeiro rótulo"),
+      input(value, {maxlength: 48, oninput: e => { graphic.labels[index] = e.target.value; storeGraphic(); }})))),
+      row(label(tr("Evidence callout", "Destaque da evidência"), input(graphic.annotation, {maxlength: 64,
+        oninput: e => { graphic.annotation = e.target.value; storeGraphic(); }})),
+        label(tr("Reveal at (s)", "Revelar em (s)"), input(graphic.reveal_at, {type: "number", min: 0, step: ".1",
+          oninput: e => { graphic.reveal_at = Number(e.target.value); storeGraphic(); }}))),
+      small(tr("Use the section’s source numbers. The video labels this diagram as illustrative.",
+        "Use os números das fontes da seção. O vídeo identifica o esquema como ilustrativo.")));
+  }
+  layout.addEventListener("change", () => { graphic.layout = layout.value; storeGraphic(); fields(); });
+  fields();
+  return node("details", {open: Boolean(graphic.layout)}, node("summary", {}, tr("Evidence diagram", "Diagrama da evidência")),
+    stack(label(tr("Diagram type", "Tipo de diagrama"), layout), controls));
+}
+
 function scriptsView() {
   const item = current("script");
   const fallback = [{key: "hook", title: tr("Opening hook", "Abertura"), seconds: 5,
@@ -575,6 +607,7 @@ function scriptsView() {
         row(label(tr("Seconds", "Segundos"), seconds), label(tr("Claim category", "Categoria"), category),
           label(tr("Source numbers", "Números das fontes"), refs)),
         label(tr("Visual beat", "Mudança visual"), visual),
+        evidenceGraphicEditor(section),
         node("details", {open: Boolean(section.motion_cues?.length)},
           node("summary", {}, tr("Editorial motion", "Intervenções de movimento")), motion.element),
         button(tr("Remove section", "Remover seção"), () => { sections.splice(i, 1); fields(); }, false, sections.length === 1));

@@ -175,6 +175,22 @@ def check_cue_window(cues, seconds):
         raise ValueError("Motion cues must fit within the section or scene duration")
 
 
+class EvidenceGraphic(Input):
+    layout: Literal["sequence", "alignment", "coupling", "routes"]
+    labels: tuple[
+        Annotated[
+            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=48)
+        ],
+        Annotated[
+            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=48)
+        ],
+    ]
+    annotation: Annotated[
+        str, StringConstraints(strip_whitespace=True, max_length=64)
+    ] = ""
+    reveal_at: float = Field(default=1, ge=0, lt=120)
+
+
 class Section(Input):
     key: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
     title: Short
@@ -191,10 +207,16 @@ class Section(Input):
         | None
     ) = None
     motion_cues: list[MotionCue] | None = Field(default=None, max_length=4)
+    evidence_graphic: EvidenceGraphic | None = None
 
     @model_validator(mode="after")
     def check_motion_plan(self):
         check_cue_window(self.motion_cues or (), self.seconds)
+        if self.evidence_graphic:
+            if not self.sources:
+                raise ValueError("An evidence graphic needs a source from this section")
+            if self.evidence_graphic.reveal_at >= self.seconds:
+                raise ValueError("The evidence reveal must start within the section")
         return self
 
 

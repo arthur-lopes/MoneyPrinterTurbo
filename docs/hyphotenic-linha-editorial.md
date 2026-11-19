@@ -28,6 +28,8 @@ O episódio começa com uma pergunta cuja resposta vale aprender. O título e a 
 
 Os trechos são tempos de roteiro. A duração da narração será confirmada na gravação. O gráfico compara tempos de chegada e mantém a medida como **mais de duas horas** em alguns pontos. As ondas subsequentes compõem outra parte do registro.
 
+Os [diagramas do E02](hyphotenic-e02-diagramas.json) usam ordens, relações e rótulos ancorados nas fontes do roteiro. São esquemas ilustrativos. O trecho dos dois instrumentos alinha a janela de chegada e o trecho da simulação mostra o pulso e a resposta da superfície em movimento.
+
 ## Pautas desta rodada
 
 As cinco fichas incluem pergunta, descoberta, recorte visual, fontes associadas a cada afirmação e limite da evidência. [Dados das pautas](hyphotenic-pautas-apuradas.json)

@@ -1,0 +1,32 @@
+{
+  "tonga-early-arrival": {
+    "layout": "sequence",
+    "labels": ["First signal observed", "Conventional estimate"],
+    "annotation": "More than 2 h early at some gauges",
+    "reveal_at": 7.2
+  },
+  "tonga-two-records": {
+    "layout": "alignment",
+    "labels": ["Air pressure · barometer", "Ocean signal · seafloor sensor"],
+    "annotation": "Same arrival window",
+    "reveal_at": 8.0
+  },
+  "tonga-moving-pressure": {
+    "layout": "coupling",
+    "labels": ["Pressure front in the air", "Sea-surface response"],
+    "annotation": "Moving source in the simulation",
+    "reveal_at": 5.2
+  },
+  "tonga-two-routes": {
+    "layout": "routes",
+    "labels": ["Ocean-only travel estimate", "Moving pressure source in the air"],
+    "annotation": "Two ways to explain the signal",
+    "reveal_at": 6.6
+  },
+  "tonga-what-arrived": {
+    "layout": "sequence",
+    "labels": ["First ocean signal", "Later waves"],
+    "annotation": "The clue was in the air-pressure record",
+    "reveal_at": 3.6
+  }
+}

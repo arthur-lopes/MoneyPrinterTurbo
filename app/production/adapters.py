@@ -380,8 +380,14 @@ class Local:
                     "Split a section whose narration exceeds two minutes"
                 )
             scene["seconds"] = seconds
-            rough_cut.frame(entry, number, len(plan), project, image)
-            media.motion(image, video, seconds, aspect, stop, remaining())
+            graphic = entry.get("evidence_graphic")
+            if graphic:
+                rough_cut.evidence_clip(
+                    entry, project, image, video, seconds, stop, remaining()
+                )
+            else:
+                rough_cut.frame(entry, number, len(plan), project, image)
+                media.motion(image, video, seconds, aspect, stop, remaining())
             width, height = (720, 1280) if aspect == "9:16" else (1280, 720)
             draft_scenes.append(
                 {
@@ -396,7 +402,8 @@ class Local:
                         "height": height,
                         "resolution": 720,
                         "provider": "local",
-                        "model": "motion",
+                        "model": "evidence_diagram" if graphic else "motion",
+                        **({"evidence_graphic": graphic} if graphic else {}),
                     },
                     "voice_data": voice_data,
                 }

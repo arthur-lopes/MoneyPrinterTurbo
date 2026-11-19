@@ -1091,7 +1091,38 @@ def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
     sandbox, monkeypatch
 ):
     store, actor, pid = sandbox
-    research = review(store, actor, pid, create_research(store, pid))
+    with store.transaction() as db:
+        research = store.add(
+            db,
+            pid,
+            "research",
+            "research",
+            {
+                "sources": [
+                    {
+                        "url": "https://example.test/observations",
+                        "title": "Observation report",
+                        "excerpt": "The first signal preceded the estimate.",
+                    }
+                ],
+                "claims": [],
+            },
+        )
+    research = review(store, actor, pid, research)
+    diagram = {
+        "layout": "sequence",
+        "labels": ["Observed", "Estimated"],
+        "annotation": "Observed first",
+        "reveal_at": 0.5,
+    }
+    with pytest.raises(ValueError, match="needs a source"):
+        m.Section(
+            key="opening",
+            title="First signal",
+            seconds=1.5,
+            narration="The signal.",
+            evidence_graphic=diagram,
+        )
     with store.transaction() as db:
         script = store.script(
             db,
@@ -1103,6 +1134,8 @@ def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
                         "title": "First signal",
                         "seconds": 1.5,
                         "narration": "The first signal arrived early.",
+                        "sources": [1],
+                        "evidence_graphic": diagram,
                     }
                 ]
             },
@@ -1146,6 +1179,14 @@ def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
     drafts = [v for v in snapshot["versions"] if v.get("draft_preview")]
     assert {v["kind"] for v in drafts} == {"scene", "image", "video", "voice"}
     assert all(v["status"] == "AWAITING_REVIEW" and v["fresh"] for v in drafts)
+    video = next(v for v in drafts if v["kind"] == "video")
+    assert video["data"]["evidence_graphic"] == diagram
+    with av.open(str(media.asset_path(worker.root, video["media"]))) as container:
+        frames = container.decode(video=0)
+        first = next(frames).to_image().getpixel((353, 359))
+        for frame in frames:
+            last = frame
+        assert last.to_image().getpixel((353, 359))[1] > first[1] + 80
     with pytest.raises(RuleError, match="source image first"):
         review(store, actor, pid, head(store, pid, f"video/{sid}"))
     with pytest.raises(RuleError, match="scene approval"):
