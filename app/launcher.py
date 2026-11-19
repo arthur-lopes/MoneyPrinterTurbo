@@ -45,11 +45,15 @@ def main(argv: list[str] | None = None) -> int:
 
         force_utf8_console()
         return cli.run_cli(argv[1:])
+    if argv and argv[0] == "production":
+        from app.production.__main__ import main as production_main
+        return production_main(argv[1:])
 
     parser = argparse.ArgumentParser(prog="mpt", description="MoneyPrinterTurbo")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("cli", help="generate videos (mpt cli --help)")
+    commands.add_parser("production", help="start the supervised production workspace")
     webui = commands.add_parser("webui", help="start the WebUI")
     webui.add_argument("--host", default="127.0.0.1", help="listen address")
     webui.add_argument("--port", type=_port_number, help="listen port (default: first free port from 8501)")

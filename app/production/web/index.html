@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoneyPrinterTurbo Production</title>
+  <link rel="stylesheet" href="/ui/workspace.css">
+  <script src="/ui/workspace.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark" aria-hidden="true">▶</span> MoneyPrinterTurbo <span id="product"></span></div>
+    <div id="utilities" class="row"></div>
+  </header>
+  <div id="layout">
+    <aside id="sidebar" hidden>
+      <nav id="navigation" aria-label="Production"></nav>
+    </aside>
+    <main id="workspace" tabindex="-1"></main>
+  </div>
+  <div id="notices" role="status" aria-live="polite"></div>
+  <dialog id="dialog"><div id="dialog-content"></div></dialog>
+</body>
+</html>
