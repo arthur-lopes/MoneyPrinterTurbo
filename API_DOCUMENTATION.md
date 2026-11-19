@@ -82,9 +82,11 @@ Quote editorial analysis with `{"operation":"analysis","provider":"codex","versi
 
 ## YouTube connection for HYPHOTENIC
 
-Use a Web application OAuth client in the `hyphotenic-moneyprinter` Google Cloud project. Enable YouTube Data API v3, YouTube Analytics API and YouTube Reporting API. Register the exact callback `https://hyphotenic.onboardingradar.com/api/youtube/callback`. The workspace privacy disclosure is served at `/youtube-privacy`.
+Use a Web application OAuth client in the `hyphotenic-moneyprinter` Google Cloud project. Enable YouTube Data API v3, YouTube Analytics API and YouTube Reporting API. Register the exact callback `https://hyphotenic.onboardingradar.com/api/youtube/callback`. Use `/youtube-about`, `/youtube-privacy` and `/youtube-terms` for public OAuth branding.
 
 In **Canal do YouTube → Configurar cliente OAuth**, the authenticated operator can enter the Web client ID, secret and an optional expected channel ID. The server stores the credential encrypted under its workspace access token. Alternatively set `MPT_YOUTUBE_CLIENT_ID`, `MPT_YOUTUBE_CLIENT_SECRET`, `MPT_YOUTUBE_REDIRECT_URI` and a Fernet key in `MPT_YOUTUBE_TOKEN_KEY` in the server environment. In that mode use `MPT_YOUTUBE_CHANNEL_ID` to pin the channel. Server settings take precedence over the browser setup.
+
+To rotate a workspace-managed secret, add a second secret to the same Google OAuth client and open **Canal do YouTube → Trocar segredo OAuth**. The workspace verifies the new secret against the connected channel before saving it and retains the existing refresh token and data. Disable the previous secret in Google after the workspace confirms the new one.
 
 The operator authorizes the appropriate channel through Google. Read mode uses YouTube read and Analytics scopes. Publishing mode adds the scope needed by the video's upload, visibility, thumbnail and caption endpoints. In **Acervo e publicação → Publicação no YouTube**, choose the exact export and confirm its private upload. Wait for processing, then confirm assets, publication or a timezone-aware schedule. A failed final response requires a status check against the existing upload session or video ID. An interrupted or expired upload can be reconciled with an existing video from Studio.
 

@@ -226,11 +226,11 @@ class YouTube:
             raise RuleError(
                 "This YouTube client is managed by the server administrator", 403
             )
-        with self.states_lock, self.store.transaction() as db:
-            if db.execute("SELECT 1 FROM youtube_connections LIMIT 1").fetchone():
-                raise RuleError(
-                    "Disconnect the channel before replacing the OAuth client"
-                )
+        with self.states_lock:
+            with self.store.transaction(write=False) as db:
+                connection = db.execute(
+                    "SELECT * FROM youtube_connections ORDER BY owner LIMIT 1"
+                ).fetchone()
             private = {
                 "client_id": request.client_id,
                 "secret": request.client_secret.get_secret_value(),
@@ -238,12 +238,30 @@ class YouTube:
                 "key": Fernet.generate_key().decode("ascii"),
                 "channel": request.channel or "",
             }
+            if connection:
+                current = self._configured()
+                if (
+                    current.client_id != request.client_id
+                    or current.redirect != private["redirect"]
+                    or (request.channel is not None and current.channel != request.channel)
+                ):
+                    raise RuleError("Rotate the secret for the same OAuth client and channel")
+                try:
+                    previous = json.loads(
+                        self.setup_cipher.decrypt(self.setup_path.read_bytes())
+                    )
+                except (OSError, ValueError, InvalidToken):
+                    raise RuleError("Could not open the current OAuth configuration") from None
+                private["key"] = previous["key"]
+                private["channel"] = current.channel
             try:
                 settings = Settings.build(**private)
             except ValueError:
                 raise RuleError(
                     "Use the workspace HTTPS address or loopback for YouTube OAuth", 422
                 ) from None
+            if connection:
+                self._verify_rotation(settings, connection)
             with NamedTemporaryFile(dir=self.store.directory, delete=False) as file:
                 temporary = self.setup_path.with_name(os.path.basename(file.name))
                 try:
@@ -257,6 +275,24 @@ class YouTube:
             self.settings = settings
             self.setup_error = False
             self.pending.clear()
+
+    def _verify_rotation(self, settings, connection):
+        result = self._token(
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": self._unseal(connection["refresh_token"]),
+            },
+            settings=settings,
+        )
+        token = result.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise RuleError("Google did not return an access token", 502)
+        channels = self._json(
+            "GET", DATA + "/channels", token,
+            params={"part": "id", "mine": "true", "maxResults": 2},
+        ).get("items", [])
+        if [channel.get("id") for channel in channels] != [connection["channel"]]:
+            raise RuleError("The new secret did not validate the connected YouTube channel")
 
     def _configured(self):
         if self.settings is None:
@@ -407,8 +443,8 @@ class YouTube:
                 ),
             )
 
-    def _token(self, data):
-        settings = self._configured()
+    def _token(self, data, *, settings=None):
+        settings = settings or self._configured()
         return self._json(
             "POST",
             TOKEN,

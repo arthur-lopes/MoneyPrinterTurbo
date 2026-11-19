@@ -26,6 +26,8 @@ class Google:
         self.sent = []
         self.visibility = "private"
         self.scope = youtube.READ_SCOPES | {youtube.WRITE_SCOPE}
+        self.client_secret = "local-test-secret"
+        self.origin = ORIGIN
         self.fail_upload = True
         self.fail_publish = True
         self.job = False
@@ -52,10 +54,11 @@ class Google:
         self.sent.append((method, path, request.headers.get("content-range")))
         if str(request.url) == youtube.TOKEN:
             payload = parse_qs(request.content.decode())
-            assert payload["client_secret"] == ["local-test-secret"]
+            if payload["client_secret"] != [self.client_secret]:
+                return httpx.Response(401, json={"error": "invalid_client"})
             if payload["grant_type"] == ["authorization_code"]:
                 assert payload["code_verifier"] and payload["redirect_uri"] == [
-                    ORIGIN + youtube.CALLBACK
+                    self.origin + youtube.CALLBACK
                 ]
                 return httpx.Response(
                     200,
@@ -467,13 +470,19 @@ def test_owner_setup_is_encrypted_and_persists_across_restart(tmp_path):
     address = "http://127.0.0.1:8765"
     payload = {
         "client_id": "test-client.apps.googleusercontent.com",
-        "client_secret": "test-private-client",
+        "client_secret": "local-test-secret",
         "channel": CHANNEL,
         "confirmed": True,
     }
 
+    google = Google()
+    google.origin = address
+
     def app():
-        return create_app(tmp_path, {token: "operator"}, worker_enabled=False)
+        return create_app(
+            tmp_path, {token: "operator"}, worker_enabled=False,
+            youtube_transport=httpx.MockTransport(google),
+        )
 
     with TestClient(app(), base_url=address) as client:
         assert (
@@ -502,6 +511,35 @@ def test_owner_setup_is_encrypted_and_persists_across_restart(tmp_path):
             json={"mode": "publish"},
             headers={"Origin": address},
         )
-        assert parse_qs(urlsplit(accept.json()["url"]).query)["redirect_uri"] == [
-            address + youtube.CALLBACK
-        ]
+        query = parse_qs(urlsplit(accept.json()["url"]).query)
+        assert query["redirect_uri"] == [address + youtube.CALLBACK]
+        callback = client.get(
+            youtube.CALLBACK,
+            params={"state": query["state"][0], "code": "mock-code"},
+            follow_redirects=False,
+        )
+        assert callback.headers["location"].endswith("connected")
+        expected = client.get("/api/youtube").json()["connection"]
+        setup_file = tmp_path / ".youtube-oauth"
+        saved_config = setup_file.read_bytes()
+        headers = {"Origin": address}
+        updated = dict(payload, client_secret="replacement-secret", channel=None)
+        assert client.post("/api/youtube/setup", headers=headers, json=updated).status_code == 502
+        assert setup_file.read_bytes() == saved_config
+        google.client_secret = updated["client_secret"]
+        wrong_client = dict(updated, client_id="other.apps.googleusercontent.com")
+        assert client.post("/api/youtube/setup", headers=headers, json=wrong_client).status_code == 409
+        google.channel = FOREIGN
+        assert client.post("/api/youtube/setup", headers=headers, json=updated).status_code == 409
+        assert setup_file.read_bytes() == saved_config
+        google.channel = CHANNEL
+        rotated = client.post("/api/youtube/setup", headers=headers, json=updated)
+        assert rotated.status_code == 200
+        assert rotated.json()["connection"] == expected
+        assert updated["client_secret"].encode() not in setup_file.read_bytes()
+
+    with TestClient(app(), base_url=address) as client:
+        assert client.post("/api/session", json={"token": token}).status_code == 200
+        assert client.get("/api/youtube").json()["connection"] == expected
+        reach = client.post("/api/youtube/reach", headers=headers, json={"confirmed": True})
+        assert reach.status_code == 200

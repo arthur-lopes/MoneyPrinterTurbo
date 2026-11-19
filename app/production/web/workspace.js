@@ -1749,12 +1749,16 @@ async function youtubeChannelView() {
     const secret = input("", {type: "password", autocomplete: "new-password"});
     const channel = input("", {maxlength: 24, autocomplete: "off"});
     const credentials = input("", {type: "file", accept: ".json,application/json"});
-    youtubeConsent(tr("Configure YouTube OAuth", "Configurar OAuth do YouTube"),
+    const heading = connection ? tr("Rotate OAuth secret", "Trocar segredo OAuth") :
+      tr("Configure YouTube OAuth", "Configurar OAuth do YouTube");
+    youtubeConsent(heading,
       stack(small(location.origin + "/api/youtube/callback"),
         label(tr("Google credentials JSON (optional)", "JSON de credenciais do Google (opcional)"), credentials),
         label(tr("Google OAuth client ID", "Client ID OAuth do Google"), client),
         label(tr("Client secret", "Client secret"), secret),
-        label(tr("Expected channel ID (optional)", "ID do canal esperado (opcional)"), channel)),
+        !connection && label(tr("Expected channel ID (optional)", "ID do canal esperado (opcional)"), channel),
+        connection && small(tr("Use a new secret from the same Google OAuth client.",
+          "Use um novo segredo do mesmo cliente OAuth do Google."))),
       tr("Save these credentials in this workspace.", "Salvar estas credenciais neste workspace."),
       async () => {
         let values = {client_id: client.value.trim(), client_secret: secret.value.trim()};
@@ -1772,6 +1776,7 @@ async function youtubeChannelView() {
           }
         }
         await api("/api/youtube/setup", "POST", {...values, channel: channel.value.trim() || null, confirmed: true});
+        if (connection) notify(tr("New secret verified and saved.", "Novo segredo verificado e salvo."));
       });
   };
   return stack(title(tr(...navLabels.channel)),
@@ -1784,7 +1789,8 @@ async function youtubeChannelView() {
         "A configuração OAuth salva não pôde ser aberta.") : configured ? tr("Connect the Google account that manages your channel.",
         "Conecte a conta Google que administra o canal.") :
         tr("YouTube OAuth is awaiting server configuration.", "A configuração OAuth do YouTube está pendente no servidor.")),
-    can_setup && !connection && button(tr("Configure OAuth client", "Configurar cliente OAuth"), configure, !configured),
+    can_setup && button(connection ? tr("Rotate OAuth secret", "Trocar segredo OAuth") :
+      tr("Configure OAuth client", "Configurar cliente OAuth"), configure, !configured),
     configured && row(!connection && button(tr("Connect for analytics", "Conectar para leitura"), connect("read")),
       !connection?.writable && button(tr("Connect for publishing", "Conectar para publicar"), connect("publish"), true),
       connection && button(tr("Enable impressions and CTR", "Ativar impressões e CTR"), () =>

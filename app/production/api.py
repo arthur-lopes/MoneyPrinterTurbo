@@ -330,6 +330,14 @@ def create_app(
     def index():
         return FileResponse(WEB / "index.html")
 
+    @app.get("/youtube-about", include_in_schema=False)
+    def youtube_about():
+        return FileResponse(WEB / "youtube-about.html")
+
+    @app.get("/youtube-terms", include_in_schema=False)
+    def youtube_terms():
+        return FileResponse(WEB / "youtube-terms.html")
+
     @app.get("/youtube-privacy", include_in_schema=False)
     def youtube_privacy():
         return FileResponse(WEB / "youtube-privacy.html")
