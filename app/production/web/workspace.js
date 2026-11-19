@@ -5,11 +5,13 @@ let locale = localStorage.getItem("mpt-production-language") || "en";
 let projectId = sessionStorage.getItem("mpt-production-project");
 let projects = [], project = null, loggedIn = false, page = "dashboard";
 let loginMethod = "token";
+let providerCurrency = null;
 let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null;
 let editing = false, polling = false;
 
 const tr = (en, pt) => locale === "pt" ? pt : en;
 const navLabels = {
+  catalog: ["Editorial catalog", "Catálogo editorial"],
   dashboard: ["Dashboard", "Painel"], projects: ["Projects", "Projetos"], research: ["Research", "Pesquisa"],
   scripts: ["Scripts", "Roteiros"], storyboard: ["Storyboard", "Storyboard"], scenes: ["Scene generation", "Geração de cenas"],
   narration: ["Narration", "Narração"], timeline: ["Timeline", "Linha do tempo"], assets: ["Asset library", "Biblioteca"],
@@ -171,7 +173,8 @@ async function quote(jobs) {
       tr("Estimated cost ", "Custo estimado ")) + format(result.total, result.currency) + " · " +
       tr("Remaining budget ", "Orçamento restante ") + format(result.budget.remaining, result.currency)),
     node("p", {}, `${result.scene_count} ${tr("scenes", "cenas")} · ${result.attempts} ${tr("authorized attempts", "tentativas autorizadas")}`),
-    node("ul", {}, result.items.map(item => node("li", {}, `${item.slot.split("/")[0]} · ${item.provider} · ${item.model} · ${item.billing === "subscription" ? tr("ChatGPT plan usage", "Uso da assinatura ChatGPT") : format(item.estimate)}`))),
+    node("ul", {}, result.items.map(item => node("li", {}, `${item.slot.split("/")[0]} · ${item.provider} · ${item.model} · ${item.billing === "subscription" ? tr("ChatGPT plan usage", "Uso da assinatura ChatGPT") : format(item.estimate)}`,
+      item.characters ? " · " + item.characters + " " + tr("characters", "caracteres") : ""))),
     usesCodex && node("p", {}, tr(
       "Codex uses your plan allowance or existing ChatGPT credits. Check that automatic reload is off in ChatGPT Usage to avoid buying more.",
       "O Codex usa a franquia ou o saldo de créditos do ChatGPT. Confira se a recarga automática está desativada em Uso no ChatGPT para evitar novas compras.")),
@@ -245,6 +248,69 @@ function loginView() {
     node("button", {class: "primary", type: "submit"}, tr("Sign in", "Entrar")))));
 }
 
+async function catalogView() {
+  const {catalog, projects: linked} = await api("/api/catalog");
+  const importFiles = () => {
+    const files = [
+      ["catalog", tr("Episode catalog", "Catálogo de pautas"), ".json"],
+      ["prompts", tr("Production prompts", "Prompts de produção"), ".txt"],
+      ["plan", tr("Editorial plan", "Plano editorial"), ".md"],
+    ].map(([key, text, accept]) => [key, text, input("", {type: "file", accept})]);
+    modal(tr("Import editorial files", "Importar arquivos editoriais"),
+      stack(...files.map(([, text, file]) => label(text, file))), [
+        button(tr("Import", "Importar"), async () => {
+          if (files.some(([, , file]) => !file.files.length)) {
+            throw new Error(tr("Choose all three files.", "Selecione os três arquivos."));
+          }
+          const documents = Object.fromEntries(await Promise.all(
+            files.map(async ([key, , file]) => [key, await file.files[0].text()])));
+          await api("/api/catalog", "PUT", documents);
+          ui("dialog").close();
+          render();
+        }, true),
+      ]);
+  };
+  const heading = title(tr("Editorial catalog", "Catálogo editorial"),
+    button(tr("Import files", "Importar arquivos"), importFiles));
+  if (!catalog) return stack(heading);
+  const episodes = new Map(catalog.episodes.map(item => [item.id, item]));
+  const rounds = catalog.publishing_rounds.map((group, index) =>
+    card(node("h2", {}, tr("Round", "Rodada") + " " + (index + 1)), ...group.map(id => {
+      const item = episodes.get(id);
+      return node("details", {}, node("summary", {}, id + " · " + item.title),
+        stack(small(item.series + " · " + item.aspect_ratio + " · " + formatDuration(item.target_duration_seconds)),
+          node("p", {}, item.opening_hook), node("p", {}, item.premise),
+          node("ol", {}, item.story_beats.map(beat => node("li", {}, beat))),
+          node("p", {}, item.visual_plan), node("p", {}, item.fact_check),
+          node("p", {}, tr("Thumbnail", "Miniatura") + " · " + item.thumbnail_text),
+          node("a", {href: item.research_start.url, target: "_blank", rel: "noopener noreferrer"}, item.research_start.label),
+          row(button(tr("Draft prompt", "Prompt de rascunho"), () => {
+            modal(tr("Draft prompt", "Prompt de rascunho"), area(item.draft_prompt, {readonly: true, rows: 14}));
+          }), button(linked[id] ? tr("Open project", "Abrir projeto") : tr("Create project", "Criar projeto"),
+            () => linked[id] ? changeProject(linked[id]) : createEditorialProject(item), true))));
+    })));
+  return stack(heading, card(node("h2", {}, catalog.channel), node("p", {}, catalog.slogan),
+    row(...[["catalog", tr("Catalog JSON", "Catálogo JSON")], ["prompts", "Prompts"],
+      ["plan", tr("Editorial plan", "Plano editorial")]].map(([name, text]) =>
+      node("a", {href: "/api/catalog/files/" + name, download: true}, text)))),
+  ...rounds);
+}
+
+function formatDuration(seconds) {
+  return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+}
+
+function createEditorialProject(episode) {
+  const localization = input("", {type: "checkbox"});
+  modal(episode.title, label(tr("Include optional Brazilian Portuguese track", "Incluir faixa opcional em português do Brasil"), localization), [
+    button(tr("Create draft project", "Criar projeto em rascunho"), async () => {
+      const {id} = await api("/api/catalog/episodes/" + episode.id + "/project", "POST", {localize: localization.checked});
+      ui("dialog").close();
+      await changeProject(id);
+    }, true),
+  ]);
+}
+
 function projectsView() {
   const name = input("", {required: true});
   const topic = area("", {required: true});
@@ -287,6 +353,11 @@ function dashboard() {
   ];
   return stack(title(d.title, badge(project.stage)),
     node("p", {}, d.topic), small([d.audience, d.languages.join(", "), d.duration + " s"].join(" · ")),
+    d.editorial && card(node("h2", {}, d.editorial.id + " · " + d.editorial.series),
+      node("p", {}, d.editorial.opening_hook), node("p", {}, d.editorial.visual_plan),
+      node("p", {}, d.editorial.fact_check),
+      node("a", {href: d.editorial.research_start.url, target: "_blank", rel: "noopener noreferrer"},
+        d.editorial.research_start.label)),
     node("progress", {max: 100, value: project.progress, "aria-label": tr("Production progress", "Progresso da produção")}),
     node("div", {class: "grid stats"}, values.map(([key, value]) => card(small(key), node("div", {class: "metric"}, value)))),
     jobsTable());
@@ -436,6 +507,11 @@ function storyboardView() {
       reviewControls(scene), button(tr("Estimate reference image", "Estimar imagem de referência"),
         () => quote([{operation: "image", scene: sid, provider: provider.value}]), false, !ready(scene) || ready(image)),
       button(tr("Import storyboard frame", "Importar quadro do storyboard"), () => importAsset("image", sid), false, !ready(scene)),
+        button(tr("Image prompt", "Prompt da imagem"), () => modal(
+          tr("Image prompt", "Prompt da imagem"),
+          stack(area(scene.data.image_prompt, {readonly: true, rows: 6}),
+            node("a", {href: "https://chatgpt.com/images", target: "_blank", rel: "noopener noreferrer"},
+              tr("Open ChatGPT Images", "Abrir ChatGPT Imagens"))))),
       revisions(scene.slot), image && revisions(image.slot));
   });
   return stack(title(tr("Storyboard", "Storyboard")), card(
@@ -449,6 +525,91 @@ function storyboardView() {
     }), button(tr("Merge selected scenes", "Unir cenas selecionadas"), () => mutate(path("/scenes/merge"), "POST", {scenes: selection()})),
     button(tr("Estimate selected previews", "Estimar prévias selecionadas"),
       () => quote(selection().map(scene => ({operation: "image", scene, provider: provider.value})))))), grid(...cards));
+}
+
+const animations = {
+  zoom_in: ["Push in", "Aproximar câmera"],
+  zoom_out: ["Pull back", "Afastar câmera"],
+  pan_left: ["Pan left", "Deslocar à esquerda"],
+  pan_right: ["Pan right", "Deslocar à direita"],
+  parallax: ["Layered parallax", "Parallax em camadas"],
+  map: ["Animated map", "Mapa animado"],
+  bar_chart: ["Animated bar chart", "Gráfico de barras animado"],
+  timeline: ["Animated timeline", "Linha do tempo animada"],
+};
+const graphicModes = new Set(["map", "bar_chart", "timeline"]);
+
+function chooseAnimation(sid, scene, clip) {
+  const saved = clip?.data.animation;
+  const mode = select(Object.entries(animations).map(([name, labels]) => [name, tr(...labels)]), saved?.mode || "zoom_in");
+  const fields = stack();
+  const heading = input(saved?.title || "", {maxlength: 100, placeholder: scene.data.title});
+  const references = project.versions.filter(v => ready(v) && v.kind === "reference" && v.data.transparent);
+  const layerOptions = [["", tr("Choose a layer", "Escolha uma camada")], ...references.map(v => [v.id, v.data.title])];
+  const layers = [0, 1].map(i => select(layerOptions, saved?.layers?.[i] || ""));
+  const entries = stack();
+  let values = [];
+
+  function addEntry(existing = {}) {
+    const name = input(existing.label || "", {maxlength: 55, required: true});
+    const value = input(existing.value ?? "", {type: "number", min: 0, step: "any"});
+    const lat = input(existing.lat ?? "", {type: "number", min: -90, max: 90, step: "any"});
+    const lon = input(existing.lon ?? "", {type: "number", min: -180, max: 180, step: "any"});
+    const item = {name, value, lat, lon};
+    const entry = row(label(tr("Label", "Rótulo"), name),
+      mode.value === "bar_chart" && label(tr("Value", "Valor"), value),
+      mode.value === "map" && [label(tr("Latitude", "Latitude"), lat), label(tr("Longitude", "Longitude"), lon)],
+      button(tr("Remove", "Remover"), () => {
+        values = values.filter(value => value !== item);
+        entry.remove();
+      }));
+    values.push(item);
+    entries.append(entry);
+  }
+
+  function redraw() {
+    fields.replaceChildren();
+    values = [];
+    entries.replaceChildren();
+    if (mode.value === "parallax") {
+      fields.append(node("p", {}, tr(
+        "The approved storyboard frame is the background. Upload transparent PNGs under Asset library and approve them to use as layers.",
+        "O quadro aprovado do storyboard é o fundo. Importe PNGs transparentes na Biblioteca e aprove-os para usar como camadas.")),
+      label(tr("Middle layer", "Camada intermediária"), layers[0]),
+      label(tr("Foreground layer (optional)", "Primeiro plano (opcional)"), layers[1]));
+    }
+    if (graphicModes.has(mode.value)) {
+      fields.append(label(tr("Graphic title", "Título do gráfico"), heading), entries,
+        button(tr("Add entry", "Adicionar item"), () => {
+          if (values.length < 8) addEntry();
+        }));
+      (saved?.mode === mode.value ? saved.entries : [{}]).forEach(addEntry);
+    }
+  }
+  mode.addEventListener("change", redraw);
+  redraw();
+  const dialog = ui("dialog");
+  modal(tr("Local animation", "Animação local"), stack(label(tr("Preset", "Modelo"), mode), fields), [
+    button(tr("Estimate animation", "Estimar animação"), async () => {
+      const animation = {mode: mode.value};
+      if (mode.value === "parallax") {
+        animation.layers = layers.map(control => control.value).filter(Boolean);
+      }
+      if (graphicModes.has(mode.value)) {
+        animation.title = heading.value;
+        animation.entries = values.map(({name, value, lat, lon}) => {
+          const entry = {label: name.value.trim()};
+          if (mode.value === "bar_chart") entry.value = value.valueAsNumber;
+          if (mode.value === "map") {
+            entry.lat = lat.valueAsNumber;
+            entry.lon = lon.valueAsNumber;
+          }
+          return entry;
+        });
+      }
+      await quote([{operation: "video", scene: sid, animation}]);
+    }, true),
+  ]);
 }
 
 function scenesView() {
@@ -470,6 +631,8 @@ function scenesView() {
           tr("Actual ", "Efetivo ") + format(jobs[0].actual) + " · " + tr("Uncertain ", "Incerto ") + format(jobs[0].uncertain)),
         row(button(clip ? tr("Estimate replacement", "Estimar substituição") : tr("Estimate generation", "Estimar geração"),
           () => quote([{operation: "video", scene: sid}]), true, generating || !eligible(sid)),
+        scene.data.provider === "local" && button(tr("Local animation", "Animação local"),
+          () => chooseAnimation(sid, scene, clip), false, generating || !ready(scene)),
         button(tr("Edit prompt or model", "Editar prompt ou modelo"), () => editScene(sid, scene)),
         button(tr("Import clip", "Importar clipe"), () => importAsset("video", sid), false, !ready(scene) || !ready(image))), reviewControls(clip),
         revisions("video/" + sid));
@@ -491,20 +654,40 @@ function editTranslation(sid, lang, item) {
   ]);
 }
 
+async function chooseElevenLabsVoice(target, cursor = "") {
+  const entries = await api("/api/providers/elevenlabs/voices" + (cursor ? "?cursor=" + encodeURIComponent(cursor) : ""));
+  const voice = select(entries.voices.map(item => [item.id, item.name]));
+  modal("ElevenLabs", entries.voices.length ? label(tr("Voice", "Voz"), voice)
+    : node("p", {}, tr("No voices on this page.", "Nenhuma voz nesta página.")), [
+    entries.next && button(tr("More voices", "Mais vozes"), () => chooseElevenLabsVoice(target, entries.next)),
+    button(tr("Use voice", "Usar voz"), () => {
+      target.value = voice.value;
+      ui("dialog").close();
+    }, true, !entries.voices.length),
+  ].filter(Boolean));
+}
+
 function narrationView() {
   return stack(title(tr("Narration", "Narração")), grid(...project.scenes.flatMap(sid => project.data.languages.map((language, i) => {
     const scene = sceneData(sid), translation = current("translation/" + sid + "/" + language);
     const voice = current("voice/" + sid + "/" + language);
-    const provider = select([["local", tr("System voice", "Voz do sistema")], ["openai", "OpenAI"]], project.data.defaults?.voice || "local");
+    const provider = select([["local", tr("System voice", "Voz do sistema")], ["elevenlabs", "ElevenLabs"], ["openai", "OpenAI"]], project.data.defaults?.voice || "local");
     const translationProvider = select([codexOption(), apiOption], project.data.defaults?.translation || "openai");
-    const voiceName = input(voice?.data.voice || "alloy");
+    const voiceName = input(voice?.data.provider === provider.value ? voice.data.voice : provider.value === "elevenlabs" ? "" : "alloy");
+    const picker = button(tr("Choose ElevenLabs voice", "Escolher voz do ElevenLabs"),
+      () => chooseElevenLabsVoice(voiceName));
+    picker.hidden = provider.value !== "elevenlabs";
+    provider.addEventListener("change", () => {
+      picker.hidden = provider.value !== "elevenlabs";
+      voiceName.value = voice?.data.provider === provider.value ? voice.data.voice : picker.hidden ? "alloy" : "";
+    });
     return card(row(node("h2", {}, scene.data.title), small(language)), node("p", {}, i ? translation?.data.narration : scene.data.narration),
       i > 0 && row(assetBadge(translation), button(tr("Edit translation", "Editar tradução"), () => editTranslation(sid, language, translation), false, !ready(scene)),
         label(tr("Translation provider", "Provedor de tradução"), translationProvider),
         button(tr("Estimate AI translation", "Estimar tradução por IA"),
           () => quote([{operation: "translation", scene: sid, language, provider: translationProvider.value}]), false, !ready(scene))),
       reviewControls(translation), row(label(tr("Speech provider", "Provedor de voz"), provider),
-        label(tr("Voice name", "Nome da voz"), voiceName)),
+        label(tr("Voice or voice ID", "Voz ou ID da voz"), voiceName), picker),
       button(tr("Estimate narration", "Estimar narração"),
         () => quote([{operation: "voice", scene: sid, language, voice: voiceName.value, provider: provider.value}]),
         true, !ready(scene) || (i > 0 && !ready(translation))),
@@ -670,7 +853,7 @@ function costsView() {
   targetLabel.hidden = true;
   scope.addEventListener("change", () => {
     const options = scope.value === "scene" ? project.scenes.map(sid => [sid, sceneData(sid).data.title]) :
-      scope.value === "provider" ? [["openai", "OpenAI"], ["runway", "Runway"]] : [];
+      scope.value === "provider" ? [["openai", "OpenAI"], ["runway", "Runway"], ["elevenlabs", "ElevenLabs"]] : [];
     target.replaceChildren(...options.map(([id, name]) => node("option", {value: id}, name)));
     targetLabel.hidden = options.length === 0;
   });
@@ -740,10 +923,16 @@ async function connectCodex() {
 
 async function providersView() {
   const providers = await api("/api/providers");
-  const currency = project?.data.currency || (locale === "pt" ? "BRL" : "USD");
+  const currency = providerCurrency || project?.data.currency || (locale === "pt" ? "BRL" : "USD");
+  const currencyPicker = select([["BRL", "BRL"], ["USD", "USD"]], currency);
+  currencyPicker.addEventListener("change", () => {
+    providerCurrency = currencyPicker.value;
+    render();
+  });
   return stack(title(tr("Providers", "Provedores")), node("p", {class: "muted"}, tr(
-    "API keys are configured on the host. Rates are operator-entered ceilings in " + currency + ".",
-    "As chaves de API são configuradas no servidor. Os valores são tetos informados pelo operador em " + currency + ".")),
+    "Rates are operator-entered spending ceilings.",
+    "Os valores são tetos informados pelo operador.")),
+  label(tr("Currency", "Moeda"), currencyPicker),
   grid(...providers.map(p => {
     if (p.billing === "subscription") {
       const labels = {
@@ -766,11 +955,19 @@ async function providersView() {
     const interval = input(saved?.interval ?? 5, {type: "number", min: 1, max: 300});
     const timeout = input(saved?.timeout ?? 180, {type: "number", min: 15, max: 1800});
     const enabled = input("", {type: "checkbox", checked: saved?.enabled === true});
+    const providerName = {openai: "OpenAI", runway: "Runway", elevenlabs: "ElevenLabs"}[p.provider];
     return card(row(node("h2", {}, p.provider + " · " + p.operation), badge(p.credential_present ? "COMPLETED" : "DRAFT")),
       small(p.credential_present ? tr("Credential present", "Credencial configurada") : tr("Credential missing", "Credencial ausente")),
+      p.manage_key && button(p.credential_present ? tr("Replace API key", "Trocar chave de API") : tr("Connect", "Conectar"),
+        () => connectProvider(p.provider, providerName)),
+      p.provider === "elevenlabs" && small(tr(
+        "The key needs Voices Read and Text to Speech access.",
+        "A chave precisa de acesso de leitura às vozes e de síntese de voz.")),
       small(p.provider === "runway" ? "2–10 s · 720p · " + tr("approved first frame", "primeiro quadro aprovado") : ""),
       label(tr("Default model", "Modelo padrão"), model),
-      label(p.provider === "runway" ? tr("Ceiling per second", "Teto por segundo") : tr("Ceiling per request", "Teto por solicitação"), rate),
+      label(p.provider === "runway" ? tr("Ceiling per second", "Teto por segundo")
+        : p.provider === "elevenlabs" ? tr("Ceiling per 1,000 characters", "Teto por 1.000 caracteres")
+        : tr("Ceiling per request", "Teto por solicitação"), rate),
       row(label(tr("Minimum interval (s)", "Intervalo mínimo (s)"), interval), label(tr("Timeout (s)", "Tempo limite (s)"), timeout)),
       label(tr("Enable for this currency", "Ativar para esta moeda"), enabled),
       button(tr("Save provider settings", "Salvar configurações do provedor"), async () => {
@@ -783,6 +980,19 @@ async function providersView() {
         notify(tr("Provider settings saved", "Configurações salvas"));
       }));
   })));
+}
+
+function connectProvider(provider, name) {
+  const key = input("", {type: "password", autocomplete: "off", maxlength: 240});
+  modal(name, label(tr("API key", "Chave de API"), key), [
+    button(tr("Validate and save", "Validar e salvar"), async () => {
+      if (!key.value.trim()) throw new Error(tr("Enter the API key.", "Informe a chave de API."));
+      await api("/api/providers/" + provider + "/credential", "PUT", {key: key.value.trim()});
+      key.value = "";
+      ui("dialog").close();
+      render();
+    }, true),
+  ]);
 }
 
 function settingsView() {
@@ -801,6 +1011,7 @@ function settingsView() {
     const options = key === "translation" ? [codexOption(), apiOption] : [["local", "Local"]];
     if (key === "research" || key === "script") options.push(codexOption());
     if (key !== "translation") options.push(key === "video" ? ["runway", "Runway"] : apiOption);
+    if (key === "voice") options.push(["elevenlabs", "ElevenLabs"]);
     const field = select(options, defaults[key] || (key === "translation" ? "openai" : "local"));
     field.addEventListener("change", () => { defaults[key] = field.value; });
     return label(tr(...names), field);
@@ -835,7 +1046,7 @@ function render() {
     ui("workspace").replaceChildren(loginView());
     return;
   }
-  const pages = project ? Object.keys(navLabels) : ["projects", "providers"];
+  const pages = project ? Object.keys(navLabels) : ["catalog", "projects", "providers"];
   if (!pages.includes(page)) page = "projects";
   if (project) {
     const switcher = select(projects.map(p => [p.id, p.data.title]), projectId);
@@ -846,11 +1057,12 @@ function render() {
   }
   ui("navigation").replaceChildren(...pages.map(name => node("button", {type: "button", "aria-current": name === page ? "page" : null,
     onclick: () => { page = name; render(); ui("workspace").focus(); }}, tr(...navLabels[name]))));
-  if (page === "providers") {
-    ui("workspace").replaceChildren(node("p", {}, tr("Loading providers", "Carregando provedores")));
+  if (page === "providers" || page === "catalog") {
+    const loadingPage = page;
+    ui("workspace").replaceChildren(node("p", {}, tr("Loading…", "Carregando…")));
     execute(async () => {
-      const view = await providersView();
-      if (page === "providers" && loggedIn) ui("workspace").replaceChildren(view);
+      const view = await (loadingPage === "catalog" ? catalogView() : providersView());
+      if (page === loadingPage && loggedIn) ui("workspace").replaceChildren(view);
     });
     return;
   }

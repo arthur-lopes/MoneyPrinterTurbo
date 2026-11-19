@@ -13,14 +13,16 @@ from threading import Lock
 import time
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import Field, SecretStr, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import codex_cli, media, models as m
+import httpx
+
+from . import adapters, codex_cli, credentials, editorial, media, models as m
 from .codex_login import DeviceLogin
 from .store import RuleError, encode
 from .workbench import Workbench
@@ -68,13 +70,19 @@ class PublicLogin:
         digest = hashlib.pbkdf2_hmac(
             "sha256", password.encode(), self.salt, PASSWORD_ITERATIONS
         )
-        username_matches = hmac.compare_digest(username.encode(), self.username.encode())
+        username_matches = hmac.compare_digest(
+            username.encode(), self.username.encode()
+        )
         password_matches = hmac.compare_digest(digest, self.digest)
         return self.actor if username_matches and password_matches else None
 
 
 class BulkReview(m.ReviewInput):
     versions: list[m.Id]
+
+
+class ProviderKey(m.Input):
+    key: SecretStr = Field(min_length=12, max_length=240)
 
 
 class RateLimit:
@@ -143,7 +151,9 @@ def create_app(
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
 
     def is_public(request):
-        return public_login is not None and request.url.hostname == public_login.hostname
+        return (
+            public_login is not None and request.url.hostname == public_login.hostname
+        )
 
     @app.middleware("http")
     async def boundary(request, call_next):
@@ -318,7 +328,12 @@ def create_app(
                 del sessions[expired]
             sessions[session] = (actor, now + 12 * 60 * 60, public)
         response.set_cookie(
-            COOKIE, session, httponly=True, secure=public, samesite="strict", max_age=43200
+            COOKIE,
+            session,
+            httponly=True,
+            secure=public,
+            samesite="strict",
+            max_age=43200,
         )
         return {"actor": actor}
 
@@ -334,6 +349,39 @@ def create_app(
     @app.get("/api/projects")
     def projects(actor=Depends(authenticated)):
         return store.snapshot(actor)
+
+    @app.get("/api/catalog")
+    def editorial_catalog(actor=Depends(authenticated)):
+        return editorial.catalog(store, actor)
+
+    @app.put("/api/catalog")
+    def save_editorial_catalog(body: editorial.Documents, actor=Depends(authenticated)):
+        editorial.upload(store, actor, body)
+        return {"ok": True}
+
+    @app.get("/api/catalog/files/{name}")
+    def editorial_file(
+        name: Literal["catalog", "prompts", "plan"], actor=Depends(authenticated)
+    ):
+        return Response(
+            editorial.document(store, actor, name),
+            media_type="text/plain",
+            headers={
+                "Content-Disposition": f'attachment; filename="{editorial.DOCUMENTS[name]}"'
+            },
+        )
+
+    @app.post("/api/catalog/episodes/{episode_id}/project")
+    def editorial_project(
+        episode_id: editorial.EpisodeId,
+        body: editorial.ProjectOptions | None = None,
+        actor=Depends(authenticated),
+    ):
+        return {
+            "id": editorial.create_project(
+                store, actor, episode_id, body or editorial.ProjectOptions()
+            )
+        }
 
     @app.post("/api/projects", status_code=201)
     def create(body: m.Project, actor=Depends(authenticated)):
@@ -441,14 +489,66 @@ def create_app(
     def providers(request: Request, actor=Depends(authenticated)):
         options = store.providers(actor)
         if is_public(request) and actor == public_login.actor:
-            next(option for option in options if option["provider"] == "codex")[
-                "device_login"
-            ] = True
+            for option in options:
+                name = option["provider"]
+                if name == "codex":
+                    option["device_login"] = True
+                if name in credentials.MANAGED:
+                    option["manage_key"] = not os.getenv(
+                        credentials.KEYS[name], ""
+                    ).strip()
         return options
 
     def codex_operator(request: Request, actor=Depends(authenticated)):
         if not is_public(request) or actor != public_login.actor:
             raise HTTPException(404, "Not found")
+
+    @app.put(
+        "/api/providers/{provider}/credential", dependencies=[Depends(codex_operator)]
+    )
+    def save_provider_credential(
+        provider: Literal["elevenlabs", "runway"],
+        body: ProviderKey,
+        actor=Depends(authenticated),
+    ):
+        if not limiter.hit(("provider-credential", actor), 6, 60):
+            raise HTTPException(429, "Try validating the key again in a minute")
+        key = body.key.get_secret_value()
+        if not re.fullmatch(r"[!-~]{12,240}", key):
+            raise HTTPException(422, "Enter a valid API key")
+        try:
+            adapters.validate_provider_key(provider, key)
+        except adapters.ProviderError as error:
+            raise HTTPException(
+                422, f"Could not verify the provider key. {error}"
+            ) from None
+        except (httpx.HTTPError, TypeError, ValueError, KeyError):
+            raise HTTPException(
+                502, "Could not reach the provider to verify the key"
+            ) from None
+        store.save_provider_key(provider, key)
+        return {"ok": True}
+
+    @app.get("/api/providers/elevenlabs/voices")
+    def list_elevenlabs_voices(
+        cursor: str | None = Query(default=None, max_length=1024),
+        actor=Depends(authenticated),
+    ):
+        if not limiter.hit(("voice-catalog", actor), 24, 60):
+            raise HTTPException(429, "Try loading voices again in a minute")
+        key = credentials.get(store.directory, "elevenlabs")
+        if not key:
+            raise HTTPException(409, "Connect ElevenLabs under Providers first")
+        try:
+            return adapters.elevenlabs_voices(key, cursor)
+        except (
+            adapters.ProviderError,
+            httpx.HTTPError,
+            TypeError,
+            ValueError,
+            KeyError,
+        ):
+            raise HTTPException(502, "Could not load voices from ElevenLabs") from None
 
     @app.post("/api/providers/codex/login", dependencies=[Depends(codex_operator)])
     async def start_codex_login():
@@ -597,7 +697,14 @@ def create_app(
             slot, deps, data = inputs
             try:
                 if kind in {"reference", "image"}:
-                    await run_in_threadpool(media.sanitize_image, source, target)
+                    alpha = await run_in_threadpool(
+                        media.sanitize_image,
+                        source,
+                        target,
+                        preserve_alpha=kind == "reference",
+                    )
+                    if kind == "reference":
+                        data = dict(data, transparent=alpha)
                 elif kind == "video":
                     data = dict(
                         data,

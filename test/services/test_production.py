@@ -14,7 +14,7 @@ import httpx
 from PIL import Image
 import pytest
 
-from app.production import adapters, media, models as m
+from app.production import adapters, credentials, media, models as m, scene_motion
 from app.production.api import PASSWORD_ITERATIONS, PublicLogin, create_app
 from app.production.store import RuleError
 from app.production.workbench import Workbench
@@ -118,6 +118,183 @@ def test_approval_order_and_immutable_versions(sandbox):
             store.asset(db, pid, old_script["id"])["data"]["sections"][0]["narration"]
             != sections[0]["narration"]
         )
+
+
+def test_editorial_files_are_private_and_create_idempotent_draft_projects(tmp_path):
+    app = create_app(
+        tmp_path,
+        {"a" * 32: "alice", "b" * 32: "bob"},
+        worker_enabled=False,
+        allowed_hosts=("testserver",),
+    )
+    alice = {"Authorization": "Bearer " + "a" * 32}
+    bob = {"Authorization": "Bearer " + "b" * 32}
+    episode = {
+        "id": "W01",
+        "series": "What if?",
+        "round": 1,
+        "order_in_round": 1,
+        "pilot": True,
+        "status": "draft",
+        "language": "en",
+        "aspect_ratio": "9:16",
+        "target_duration_seconds": 90,
+        "title": "A quiet network",
+        "opening_hook": "Look outside.",
+        "premise": "Connectivity fades.",
+        "story_beats": ["Start", "End"],
+        "visual_plan": "Show a chart.",
+        "thumbnail_text": "OFFLINE",
+        "fact_check": "Verify the premise.",
+        "draft_prompt": "Text for editorial review.",
+        "research_start": {"label": "Reference", "url": "https://example.org/research"},
+    }
+    catalog = {
+        "schema_version": 1,
+        "kind": "editorial_catalog",
+        "channel": "Hyphotenic",
+        "slogan": "One change.",
+        "default_narration_language": "en",
+        "optional_localization": "pt-BR",
+        "publishing_rounds": [["W01"]],
+        "episodes": [episode],
+    }
+    files = {
+        "catalog": json.dumps(catalog, indent=2),
+        "plan": "# Editorial plan\r\n",
+        "prompts": "Prompt\r\n",
+    }
+    with TestClient(app) as client:
+        assert client.put("/api/catalog", json=files).status_code == 401
+        assert client.put("/api/catalog", json=files, headers=alice).status_code == 200
+        assert client.get("/api/catalog", headers=bob).json()["catalog"] is None
+        assert client.get("/api/catalog/files/plan", headers=bob).status_code == 404
+        for name, contents in files.items():
+            assert (
+                client.get("/api/catalog/files/" + name, headers=alice).content
+                == contents.encode()
+            )
+        assert client.get("/api/projects", headers=alice).json() == []
+        route = "/api/catalog/episodes/W01/project"
+        assert client.post(route, headers=bob).status_code == 404
+        pid = client.post(route, headers=alice).json()["id"]
+        assert client.post(route, headers=alice).json()["id"] == pid
+        project = client.get("/api/projects/" + pid, headers=alice).json()
+        assert project["jobs"] == []
+        assert project["data"]["editorial"]["id"] == "W01"
+        assert project["data"]["style"]["aspect"] == "9:16"
+        assert project["data"]["defaults"]["translation"] == "codex"
+
+
+def test_graphic_quote_uses_reviewed_scene_and_fixed_template(sandbox, monkeypatch):
+    store, actor, pid = sandbox
+    [sid, _] = prepare(store, actor, pid)
+    monkeypatch.setattr(scene_motion, "executable", lambda: "mock-hyperframes")
+    animation = {"mode": "bar_chart", "entries": [{"label": "<test>", "value": 200}]}
+    request = m.RequestJob(operation="video", scene=sid, animation=animation)
+    with pytest.raises(RuleError, match="scene approval"):
+        store.quote(actor, pid, [request])
+    review(store, actor, pid, head(store, pid, f"scene/{sid}"))
+    quote = store.quote(actor, pid, [request])
+    assert (quote["total"], quote["items"][0]["model"]) == (0, "bar_chart")
+
+    def render(args, **kwargs):
+        source = (kwargs["cwd"] / "index.html").read_text(encoding="utf-8")
+        assert "&lt;test&gt;" in source and "<test>" not in source
+        assert "data-no-timeline" in source
+        (kwargs["cwd"] / "video.mp4").write_bytes(b"fixture")
+
+    monkeypatch.setattr(media, "run", render)
+    worker = Worker(store)
+    assert not worker.step()
+    store.authorize(actor, pid, quote["id"], 0)
+    assert worker.step()
+    result = head(store, pid, f"video/{sid}")
+    assert result["status"] == "AWAITING_REVIEW"
+    assert result["data"]["animation"]["entries"][0]["value"] == 200
+
+
+def test_elevenlabs_uses_approved_text_and_single_paid_attempt(sandbox, monkeypatch):
+    store, actor, pid = sandbox
+    sid = prepare(store, actor, pid)[0]
+    scene = review(store, actor, pid, head(store, pid, f"scene/{sid}"))
+    key = "mock-elevenlabs-test-value"
+    credentials.save(store.directory, "elevenlabs", key)
+    store.provider(
+        actor,
+        m.Provider(
+            provider="elevenlabs",
+            operation="voice",
+            model="eleven_flash_v2_5",
+            enabled=True,
+            ceiling=100,
+            confirmed=True,
+        ),
+    )
+    store.budget(
+        actor,
+        pid,
+        m.Budget(scope="provider", target="elevenlabs", limit=1000, confirmed=True),
+    )
+    store.budget(actor, pid, m.Budget(scope="project", limit=1000, confirmed=True))
+    request = m.RequestJob(
+        operation="voice",
+        scene=sid,
+        language="en-US",
+        provider="elevenlabs",
+        voice="voicefixture123",
+    )
+    calls = []
+
+    def provider(req):
+        calls.append(req.method)
+        assert req.url.path == "/v1/text-to-speech/voicefixture123"
+        assert req.headers["xi-api-key"] == key
+        assert json.loads(req.content) == {
+            "model_id": "eleven_flash_v2_5",
+            "text": scene["data"]["narration"],
+            "language_code": "en",
+        }
+        if len(calls) == 2:
+            raise httpx.ReadTimeout("Mock interruption")
+        return httpx.Response(
+            200, content=b"fixture", headers={"history-item-id": "receipt-test"}
+        )
+
+    monkeypatch.setattr(
+        adapters,
+        "_client",
+        lambda _: httpx.Client(transport=httpx.MockTransport(provider)),
+    )
+    monkeypatch.setattr(
+        media, "sanitize_audio", lambda _src, output, *_: write_voice(output)
+    )
+    worker = Worker(store)
+    quote = store.quote(actor, pid, [request])
+    assert quote["items"][0]["characters"] == len(scene["data"]["narration"])
+    assert quote["total"] == (100 * len(scene["data"]["narration"]) + 999) // 1000
+    assert not worker.step()
+    [job] = store.authorize(actor, pid, quote["id"], quote["total"])
+    with pytest.raises(RuleError, match="active jobs"):
+        store.save_provider_key("elevenlabs", "replacement-key")
+    assert worker.step()
+    voice = head(store, pid, f"voice/{sid}/en-US")
+    assert voice["data"]["history_item_id"] == "receipt-test"
+    assert voice["status"] == "AWAITING_REVIEW"
+    with store.transaction() as db:
+        db.execute("UPDATE jobs SET submitted=0 WHERE id=?", (job,))
+    quote = store.quote(actor, pid, [request])
+    [retry] = store.authorize(actor, pid, quote["id"], quote["total"])
+    assert worker.step() and not worker.step()
+    jobs = {work["id"]: work for work in store.snapshot(actor, pid)["jobs"]}
+    assert jobs[job]["status"] == "COMPLETED"
+    assert (
+        jobs[retry]["status"] == "FAILED" and jobs[retry]["uncertain"] == quote["total"]
+    )
+    another = store.quote(actor, pid, [request])
+    with pytest.raises(RuleError, match="uncertain charge"):
+        store.authorize(actor, pid, another["id"], another["total"])
+    assert calls == ["POST", "POST"]
 
 
 def test_concurrent_duplicate_and_budget_reservation(sandbox, monkeypatch):
@@ -304,22 +481,34 @@ def test_public_login_and_loopback_access(tmp_path):
     }
     assert public.get("http://studio.example.test/api/session").status_code == 403
     assert public.post("/api/session", json=payload).status_code == 403
-    assert public.post(
-        "/api/session", json=payload, headers={"Origin": "https://elsewhere.test"}
-    ).status_code == 403
-    assert public.post(
-        "/api/session", json={**payload, "password": "wrong"}, headers=headers
-    ).status_code == 401
-    assert public.post(
-        "/api/session", json={**payload, "password": "x" * 257}, headers=headers
-    ).status_code == 422
-    assert public.post(
-        "/api/session", json={"token": token}, headers=headers
-    ).status_code == 401
+    assert (
+        public.post(
+            "/api/session", json=payload, headers={"Origin": "https://elsewhere.test"}
+        ).status_code
+        == 403
+    )
+    assert (
+        public.post(
+            "/api/session", json={**payload, "password": "wrong"}, headers=headers
+        ).status_code
+        == 401
+    )
+    assert (
+        public.post(
+            "/api/session", json={**payload, "password": "x" * 257}, headers=headers
+        ).status_code
+        == 422
+    )
+    assert (
+        public.post("/api/session", json={"token": token}, headers=headers).status_code
+        == 401
+    )
     login = public.post("/api/session", json=payload, headers=headers)
     assert login.json() == {"actor": "operator"}
     cookie = login.headers["set-cookie"]
-    assert all(part in cookie.lower() for part in ("httponly", "secure", "samesite=strict"))
+    assert all(
+        part in cookie.lower() for part in ("httponly", "secure", "samesite=strict")
+    )
     assert public.get("/api/projects").status_code == 200
     assert (
         local.get("/api/projects", headers={"Cookie": cookie.split(";")[0]}).status_code

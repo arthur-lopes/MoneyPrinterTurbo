@@ -60,7 +60,7 @@ class ProviderDefaults(Input):
     translation: Literal["openai", "codex"] = "openai"
     image: Literal["local", "openai"] = "local"
     video: Literal["local", "runway"] = "local"
-    voice: Literal["local", "openai"] = "local"
+    voice: Literal["local", "openai", "elevenlabs"] = "local"
 
 
 class Project(Input):
@@ -254,9 +254,59 @@ class DeliveryMetadata(Input):
     description: Text
 
 
+GRAPHIC_MODES = frozenset({"map", "bar_chart", "timeline"})
+HYPERFRAMES_MODES = GRAPHIC_MODES | {"parallax"}
+
+
+class GraphicEntry(Input):
+    label: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=55)
+    ]
+    value: float | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+
+
+class Animation(Input):
+    mode: Literal[
+        "zoom_in",
+        "zoom_out",
+        "pan_left",
+        "pan_right",
+        "parallax",
+        "map",
+        "bar_chart",
+        "timeline",
+    ]
+    title: str = Field(default="", max_length=100)
+    layers: list[Id] = Field(default_factory=list, max_length=2)
+    entries: list[GraphicEntry] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def check_template_data(self):
+        if self.mode == "parallax":
+            if not self.layers or len(set(self.layers)) != len(self.layers):
+                raise ValueError(
+                    "Choose one or two different approved transparent layers"
+                )
+        elif self.layers:
+            raise ValueError("Layers are only used for parallax")
+        if self.mode in GRAPHIC_MODES and not self.entries:
+            raise ValueError("Add entries to the selected graphic")
+        if self.mode not in GRAPHIC_MODES and self.entries:
+            raise ValueError("Entries are only used in graphics")
+        if self.mode == "map" and any(
+            e.lat is None or e.lon is None for e in self.entries
+        ):
+            raise ValueError("Enter latitude and longitude for each map location")
+        if self.mode == "bar_chart" and any(e.value is None for e in self.entries):
+            raise ValueError("Enter a value for each bar")
+        return self
+
+
 class RequestJob(Input):
     operation: Operation
-    provider: Literal["local", "openai", "runway", "codex"] | None = None
+    provider: Literal["local", "openai", "runway", "codex", "elevenlabs"] | None = None
     scene: Id | None = None
     language: Language | None = None
     version: Id | None = None
@@ -264,6 +314,7 @@ class RequestJob(Input):
     instructions: str = Field(default="", max_length=3000)
     voice: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9 -]{1,80}$")] = "alloy"
     timeline: Timeline | None = None
+    animation: Animation | None = None
 
 
 class QuoteInput(Input):
@@ -283,7 +334,7 @@ class Budget(Input):
 
 
 class Provider(Input):
-    provider: Literal["openai", "runway"]
+    provider: Literal["openai", "runway", "elevenlabs"]
     operation: Literal["research", "script", "image", "video", "translation", "voice"]
     model: Short
     currency: Literal["USD", "BRL"] = "USD"

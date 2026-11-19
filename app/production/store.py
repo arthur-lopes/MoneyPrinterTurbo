@@ -14,6 +14,13 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, data TEXT NOT NULL, created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS editorial_catalogs (
+    owner TEXT PRIMARY KEY, data TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS editorial_projects (
+    owner TEXT NOT NULL, episode TEXT NOT NULL, project TEXT NOT NULL REFERENCES projects(id),
+    PRIMARY KEY(owner, episode)
+);
 CREATE TABLE IF NOT EXISTS scenes (
     id TEXT PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(id),
     position INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1
@@ -118,12 +125,15 @@ class Store:
             db.close()
 
     def create(self, actor, data):
-        pid = uuid4().hex
         with self.transaction() as db:
-            db.execute(
-                "INSERT INTO projects VALUES(?,?,?,?)",
-                (pid, actor, encode(data), time.time()),
-            )
+            return self.insert_project(db, actor, data)
+
+    def insert_project(self, db, actor, data):
+        pid = uuid4().hex
+        db.execute(
+            "INSERT INTO projects VALUES(?,?,?,?)",
+            (pid, actor, encode(data), time.time()),
+        )
         return pid
 
     def project(self, db, actor, pid):

@@ -59,6 +59,12 @@ For browser access over HTTPS, configure `MPT_PRODUCTION_PUBLIC_ORIGIN`, `MPT_PR
 
 For subscription-backed generation, sign in to the public studio, open **Providers → Codex → Connect ChatGPT account**, and authorize the device on the official ChatGPT page. Enable device code login in ChatGPT **Settings → Security** first. The Codex CLI stores the resulting sign-in in the service's private home on the VPS. [Codex device sign-in](https://learn.chatgpt.com/docs/auth#preferred-device-code-authentication-beta)
 
+In **Editorial catalog**, import the catalog JSON, prompts TXT, and plan Markdown together. Browse the publishing rounds, download the source files, and create a draft workspace from an episode. These projects use Codex for text and retain the editorial brief. Importing a catalog or creating a project does not create generation jobs.
+
+In **Scene generation**, choose **Local animation** on an approved local scene. Camera moves use FFmpeg. Parallax uses an approved storyboard frame and one or two approved transparent PNG reference assets. Animated maps, bar charts, and timelines use the data entered in the preset. The templates render locally with HyperFrames. Install the runtime as root using [the VPS installer](deploy/vps/install-hyperframes.sh) after the base VPS bootstrap. Set `MPT_PRODUCTION_HYPERFRAMES` to an executable wrapper for other hosts. The map uses [Natural Earth](https://www.naturalearthdata.com/about/terms-of-use/) land geometry.
+
+For ElevenLabs and Runway, use **Providers → Connect** and enter the provider API key. The studio verifies the key with a read-only request. ElevenLabs keys need voice catalog read access and text-to-speech access. Pick a model, enter the spending ceiling for the project currency, enable the operation, and set a project budget. ElevenLabs estimates are rounded up to the nearest cent from the approved narration length and the ceiling per 1,000 characters. In **Narration**, select **ElevenLabs** and a voice for each language before requesting an estimate. Generated audio stays subject to the usual review and export gates. [ElevenLabs voices](https://elevenlabs.io/docs/api-reference/voices/search) · [ElevenLabs synthesis](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)
+
 ## 界面预览 🖥️
 
 <h4 align="center">WebUI</h4>

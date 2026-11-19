@@ -2,20 +2,22 @@
 
 from datetime import datetime, timezone
 import os
+import re
 import time
 from uuid import uuid4
 
-from . import codex_cli
+from . import codex_cli, credentials, scene_motion
+from .models import GRAPHIC_MODES, HYPERFRAMES_MODES
 from .store import ACTIVE, SCENE_OPERATIONS, RuleError, Store, encode, unpack
 
 
-KEYS = {"openai": "MPT_PRODUCTION_OPENAI_KEY", "runway": "MPT_PRODUCTION_RUNWAY_KEY"}
 MODELS = {
     ("openai", "research"): ("gpt-4.1-mini",),
     ("openai", "script"): ("gpt-4.1-mini",),
     ("openai", "translation"): ("gpt-4.1-mini",),
     ("openai", "image"): ("gpt-image-1.5",),
     ("openai", "voice"): ("tts-1", "gpt-4o-mini-tts"),
+    ("elevenlabs", "voice"): ("eleven_multilingual_v2", "eleven_flash_v2_5"),
     ("runway", "video"): ("gen4_turbo",),
 }
 LOCAL_MODELS = {
@@ -45,6 +47,21 @@ def _deployment_draining():
 
 
 class Workbench(Store):
+    def save_provider_key(self, provider, key):
+        with self.transaction() as db:
+            if os.getenv(credentials.KEYS[provider], "").strip():
+                raise RuleError(
+                    "This provider key is configured by the server administrator"
+                )
+            if db.execute(
+                "SELECT 1 FROM jobs WHERE provider=? AND status IN (?,?)",
+                (provider, *ACTIVE),
+            ).fetchone():
+                raise RuleError(
+                    "Wait for the provider's active jobs before replacing its key"
+                )
+            credentials.save(self.directory, provider, key)
+
     def provider(self, actor, request):
         if request.model not in MODELS.get((request.provider, request.operation), ()):
             raise RuleError("Unsupported provider and model combination", 422)
@@ -77,7 +94,7 @@ class Workbench(Store):
                     currency: rows.get((name, operation, currency))
                     for currency in ("USD", "BRL")
                 },
-                "credential_present": bool(os.getenv(KEYS[name], "").strip()),
+                "credential_present": bool(credentials.get(self.directory, name)),
                 "capabilities": {
                     "durations": list(range(2, 11)),
                     "resolution": ["1280:720", "720:1280"],
@@ -118,7 +135,7 @@ class Workbench(Store):
             elif scope == "scene":
                 if target not in self.order(db, pid):
                     raise RuleError("Unknown project scene", 422)
-            elif target not in KEYS:
+            elif target not in credentials.KEYS:
                 raise RuleError("Unknown paid provider", 422)
             values = (actor, project["currency"], scope, target, request.limit)
             db.execute("INSERT OR REPLACE INTO budgets VALUES(?,?,?,?,?)", values)
@@ -157,14 +174,19 @@ class Workbench(Store):
             "SELECT data FROM providers WHERE owner=? AND provider=? AND operation=? AND currency=?",
             (project["owner"], provider, operation, project["data"]["currency"]),
         ).fetchone()
-        if not row or not os.getenv(KEYS[provider], "").strip():
+        key = credentials.get(self.directory, provider)
+        if not row or not key:
             raise RuleError(
                 "Enable this provider and configure its server-side credential"
             )
         setup = unpack(row, "data")["data"]
         if not setup["enabled"]:
             raise RuleError("Provider is disabled")
-        return dict(setup, estimate=setup["ceiling"])
+        return dict(
+            setup,
+            estimate=setup["ceiling"],
+            credential_revision=credentials.revision(key),
+        )
 
     def _timeline(self, db, pid, project, timeline, deps):
         if not timeline or not set(timeline.languages) <= set(project["languages"]):
@@ -271,6 +293,8 @@ class Workbench(Store):
             )
         if request.timeline is not None and kind != "assembly":
             raise RuleError("A timeline is only used for assembly", 422)
+        if request.animation and kind != "video":
+            raise RuleError("An animation is only used for video", 422)
         if request.sources and kind != "research":
             raise RuleError("Sources are only accepted for research", 422)
         if request.version and kind not in {"script", "export"}:
@@ -315,12 +339,34 @@ class Workbench(Store):
                 for ref in scene["data"]["references"]
             ]
         if kind == "video":
-            image = self.require(db, pid, f"image/{sid}")
-            deps.append({"id": image["id"]})
-            payload["first_frame"] = image["media"]
             provider = request.provider or scene["data"]["provider"]
             if provider != scene["data"]["provider"]:
                 raise RuleError("Approve a scene revision with the selected provider")
+            animation = request.animation
+            if animation:
+                if provider != "local":
+                    raise RuleError(
+                        "Local animation presets require the local video provider"
+                    )
+                if (
+                    animation.mode in HYPERFRAMES_MODES
+                    and not scene_motion.executable()
+                ):
+                    raise RuleError(
+                        "The HyperFrames renderer is unavailable on this host"
+                    )
+                payload["animation"] = animation.model_dump()
+                payload["layers"] = []
+                for layer_id in animation.layers:
+                    layer = self._attachment(db, pid, layer_id, "reference")
+                    if not layer["data"].get("transparent"):
+                        raise RuleError("Choose transparent PNG layers for parallax")
+                    deps.append({"id": layer_id})
+                    payload["layers"].append(layer["media"])
+            if not animation or animation.mode not in GRAPHIC_MODES:
+                image = self.require(db, pid, f"image/{sid}")
+                deps.append({"id": image["id"]})
+                payload["first_frame"] = image["media"]
             if provider == "runway" and (
                 scene["data"]["seconds"] not in range(2, 11)
                 or len(scene["data"]["video_prompt"]) > 1000
@@ -352,8 +398,24 @@ class Workbench(Store):
             payload["assembly"] = assembly["media"]
             payload["metadata"] = assembly["data"]
         setup = self._settings(db, project, provider, kind)
+        if request.animation:
+            setup["model"] = request.animation.mode
+            if request.animation.mode in HYPERFRAMES_MODES:
+                setup["timeout"] = 600
         if provider == "runway":
             setup["estimate"] *= int(scene["data"]["seconds"])
+        if provider == "elevenlabs":
+            if not re.fullmatch(r"[A-Za-z0-9]{10,80}", request.voice):
+                raise RuleError(
+                    "Choose an ElevenLabs voice from the connected account", 422
+                )
+            characters = len(payload["narration"])
+            if setup["model"] == "eleven_multilingual_v2" and characters > 10000:
+                raise RuleError(
+                    "ElevenLabs Multilingual v2 supports up to 10,000 characters"
+                )
+            payload["character_count"] = characters
+            setup["estimate"] = (setup["ceiling"] * characters + 999) // 1000
         if setup["estimate"] > 1_000_000_000:
             raise RuleError("Estimated charge exceeds the supported ceiling")
         current = self.head(db, pid, slot)
@@ -362,6 +424,10 @@ class Workbench(Store):
             and current
             and current["status"] == "APPROVED"
             and self.fresh(db, current)
+            and (
+                not request.animation
+                or current["data"].get("animation") == payload["animation"]
+            )
         ):
             raise RuleError(
                 "This scene already has an approved video. Revise the scene to make a replacement."
@@ -375,6 +441,9 @@ class Workbench(Store):
             raise RuleError(
                 "This scene asset is already approved. Revise its inputs to make a replacement."
             )
+        parameters = request.model_dump()
+        if not request.animation:
+            parameters.pop("animation")
         return dict(
             setup,
             payload=payload,
@@ -382,7 +451,7 @@ class Workbench(Store):
             slot=slot,
             operation=kind,
             scene=sid,
-            request=request.model_dump(),
+            request=parameters,
             head=current["id"] if current else None,
             head_status=current["status"] if current else None,
         )
@@ -412,6 +481,11 @@ class Workbench(Store):
                         key: spec[key]
                         for key in ("slot", "provider", "model", "estimate")
                     }
+                    | (
+                        {"characters": spec["payload"]["character_count"]}
+                        if spec["provider"] == "elevenlabs"
+                        else {}
+                    )
                     | {
                         "billing": spec.get(
                             "billing", "local" if spec["provider"] == "local" else "api"
@@ -614,10 +688,13 @@ class Workbench(Store):
             AND c.provider=? AND c.operation=?""",
             (job["project"], job["provider"], job["operation"]),
         ).fetchone()
+        key = credentials.get(self.directory, job["provider"])
+        expected = job["spec"].get("credential_revision")
         return bool(
             row
             and unpack(row, "data")["data"]["enabled"]
-            and os.getenv(KEYS[job["provider"]], "").strip()
+            and key
+            and (expected is None or credentials.revision(key) == expected)
         )
 
     def recover(self):

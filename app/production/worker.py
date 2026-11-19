@@ -9,7 +9,15 @@ from filelock import FileLock, Timeout
 import httpx
 
 from . import media
-from .adapters import CodexSubscription, Deferred, Local, OpenAI, ProviderError, Runway
+from .adapters import (
+    CodexSubscription,
+    Deferred,
+    ElevenLabs,
+    Local,
+    OpenAI,
+    ProviderError,
+    Runway,
+)
 from .store import RuleError
 
 
@@ -29,6 +37,7 @@ class Worker:
                 "local": Local(),
                 "codex": CodexSubscription(),
                 "openai": OpenAI(),
+                "elevenlabs": ElevenLabs(),
                 "runway": Runway(store),
             }
         )

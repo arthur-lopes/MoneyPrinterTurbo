@@ -46,14 +46,16 @@ def asset_path(root, name):
     return path
 
 
-def run(args, *, cwd, stop, timeout):
+def run(args, *, cwd, stop, timeout, process_group=False):
     start = time.monotonic()
+    grouped = process_group and os.name != "nt"
     with subprocess.Popen(
         args,
         cwd=cwd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=grouped,
     ) as child:
         try:
             while child.poll() is None:
@@ -64,7 +66,14 @@ def run(args, *, cwd, stop, timeout):
                 time.sleep(0.05)
         finally:
             if child.poll() is None:
-                child.kill()
+                if grouped:
+                    import signal
+                    from contextlib import suppress
+
+                    with suppress(ProcessLookupError):
+                        os.killpg(child.pid, signal.SIGKILL)
+                else:
+                    child.kill()
                 child.wait()
         if child.returncode:
             raise MediaError("Media could not be decoded or rendered")
@@ -90,7 +99,7 @@ def ffmpeg(args, *, cwd, stop, timeout):
     run(command, cwd=cwd, stop=stop, timeout=timeout)
 
 
-def sanitize_image(source, destination):
+def sanitize_image(source, destination, *, preserve_alpha=False):
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -100,11 +109,18 @@ def sanitize_image(source, destination):
                     or getattr(image, "n_frames", 1) != 1
                 ):
                     raise MediaError("Image must be a single frame under 16 megapixels")
-                frame = ImageOps.exif_transpose(image).convert("RGB")
+                mode = (
+                    "RGBA"
+                    if preserve_alpha
+                    and ("A" in image.getbands() or "transparency" in image.info)
+                    else "RGB"
+                )
+                frame = ImageOps.exif_transpose(image).convert(mode)
                 frame.thumbnail((1536, 1536))
-                clean = Image.new("RGB", frame.size)
+                clean = Image.new(mode, frame.size)
                 clean.paste(frame)
                 clean.save(destination, optimize=True)
+                return mode == "RGBA" and clean.getchannel("A").getextrema()[0] < 255
     except (
         OSError,
         ValueError,
@@ -314,13 +330,22 @@ def speech(text, language, voice, output, stop, timeout):
         ) from exc
 
 
-def motion(image, output, seconds, aspect, stop, timeout):
+def motion(image, output, seconds, aspect, stop, timeout, preset=None):
     size = "1280x720" if aspect == "16:9" else "720x1280"
     frames = max(1, math.ceil(seconds * 24))
     width, height = size.split("x")
+    progress = f"on/{max(1, frames - 1)}"
+    zoom = "min(zoom+0.0007,1.15)" if preset is None else f"1+0.16*{progress}"
+    offset = "iw/2-iw/zoom/2"
+    if preset == "zoom_out":
+        zoom = f"1.16-0.16*{progress}"
+    if preset in {"pan_left", "pan_right"}:
+        zoom = "1.2"
+        position = progress if preset == "pan_right" else f"1-{progress}"
+        offset = f"(iw-iw/zoom)*({position})"
     vf = (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
-        "scale=1920:-2,zoompan=z='min(zoom+0.0007,1.15)':x='iw/2-iw/zoom/2':"
+        f"scale=1920:-2,zoompan=z='{zoom}':x='{offset}':"
         f"y='ih/2-ih/zoom/2':d={frames}:s={size}:fps=24"
     )
     ffmpeg(

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 from tempfile import TemporaryDirectory
 import time
@@ -14,14 +15,14 @@ from uuid import UUID
 
 import httpx
 
-from . import codex_cli, media
-from .models import Research, Script, Translation
-from .workbench import KEYS
+from . import codex_cli, credentials, media, scene_motion
+from .models import HYPERFRAMES_MODES, Research, Script, Translation
 
 
 OPENAI = "https://api.openai.com/v1"
 RUNWAY = "https://api.dev.runwayml.com/v1"
 RUNWAY_VERSION = "2024-11-06"
+ELEVENLABS = "https://api.elevenlabs.io"
 
 
 @dataclass
@@ -52,13 +53,23 @@ def _client(timeout):
 
 
 def _request(
-    client, method, url, *, limit, stop=lambda: False, destination=None, **kwargs
+    client,
+    method,
+    url,
+    *,
+    limit,
+    stop=lambda: False,
+    destination=None,
+    response_headers=None,
+    **kwargs,
 ):
     deadline = time.monotonic() + (client.timeout.read or 40)
     with client.stream(method, url, **kwargs) as response:
         if response.status_code >= 300:
             # An ambiguous submission or provider-side error may have consumed credits.
             raise ProviderError(f"Provider returned HTTP {response.status_code}")
+        if response_headers is not None:
+            response_headers.update(response.headers)
         data = bytearray()
         count = 0
         with ExitStack() as stack:
@@ -82,6 +93,48 @@ def _request(
 
 def _json(client, method, url, **kwargs):
     return json.loads(_request(client, method, url, limit=20 * 1024 * 1024, **kwargs))
+
+
+def elevenlabs_voices(key, cursor=None):
+    with _client(14) as client:
+        params = {"page_size": 100, "include_total_count": "false"}
+        if cursor:
+            params["next_page_token"] = cursor
+        result = _json(
+            client,
+            "GET",
+            f"{ELEVENLABS}/v2/voices",
+            headers={"xi-api-key": key},
+            params=params,
+        )
+    return {
+        "voices": [
+            {
+                "id": voice["voice_id"],
+                "name": str(voice.get("name") or voice["voice_id"])[:140],
+            }
+            for voice in result["voices"]
+            if re.fullmatch(r"[A-Za-z0-9]{10,80}", voice.get("voice_id", ""))
+        ],
+        "next": result.get("next_page_token") if result.get("has_more") else None,
+    }
+
+
+def validate_provider_key(provider, key):
+    if provider == "elevenlabs":
+        elevenlabs_voices(key)
+        return
+    with _client(14) as client:
+        _request(
+            client,
+            "GET",
+            f"{RUNWAY}/organization",
+            limit=131072,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "X-Runway-Version": RUNWAY_VERSION,
+            },
+        )
 
 
 def _context_prompt(kind, payload):
@@ -185,15 +238,23 @@ class Local:
             )
         if kind == "video":
             output = scratch / "video.mp4"
-            media.motion(
-                media.asset_path(root, payload["first_frame"]),
-                output,
-                scene["seconds"],
-                payload["style"]["aspect"],
-                stop,
-                timeout,
-            )
-            return Result(_video_data(spec), output)
+            animation = payload.get("animation")
+            if animation and animation["mode"] in HYPERFRAMES_MODES:
+                scene_motion.render(root, payload, output, stop, timeout)
+            else:
+                media.motion(
+                    media.asset_path(root, payload["first_frame"]),
+                    output,
+                    scene["seconds"],
+                    payload["style"]["aspect"],
+                    stop,
+                    timeout,
+                    preset=animation["mode"] if animation else None,
+                )
+            data = _video_data(spec)
+            if animation:
+                data["animation"] = animation
+            return Result(data, output)
         if kind == "voice":
             output = scratch / "voice.wav"
             temporary = scratch / "system.wav"
@@ -285,7 +346,7 @@ class OpenAI:
     def run(self, job, root, scratch, stop, progress):
         spec = job["spec"]
         kind, payload, model = job["operation"], spec["payload"], spec["model"]
-        key = os.getenv(KEYS["openai"], "").strip()
+        key = credentials.get(root.parent, "openai")
         if not key:
             raise ProviderError("OpenAI credential is unavailable", safe=True)
         headers = {"Authorization": f"Bearer {key}"}
@@ -399,6 +460,47 @@ class OpenAI:
         raise ProviderError("Unsupported OpenAI operation", safe=True)
 
 
+class ElevenLabs:
+    def run(self, job, root, scratch, stop, progress):
+        spec = job["spec"]
+        payload = spec["payload"]
+        key = credentials.get(root.parent, "elevenlabs")
+        if not key or credentials.revision(key) != spec["credential_revision"]:
+            raise ProviderError(
+                "ElevenLabs credential changed; request a new quote", safe=True
+            )
+        if stop():
+            raise ProviderError(
+                "Cancelled before ElevenLabs submission", safe=True, cancelled=True
+            )
+        raw = scratch / "elevenlabs.mp3"
+        output = scratch / "voice.wav"
+        body = {"model_id": spec["model"], "text": payload["narration"]}
+        if spec["model"] == "eleven_flash_v2_5":
+            body["language_code"] = payload["language"].split("-", 1)[0]
+        headers = {}
+        with _client(spec["timeout"]) as client:
+            _request(
+                client,
+                "POST",
+                f"{ELEVENLABS}/v1/text-to-speech/{payload['voice']}",
+                headers={"xi-api-key": key, "Accept": "audio/mpeg"},
+                params={"output_format": "mp3_44100_128"},
+                json=body,
+                limit=media.MAX_AUDIO,
+                destination=raw,
+                stop=stop,
+                response_headers=headers,
+            )
+        media.sanitize_audio(raw, output, stop, spec["timeout"])
+        data = _voice_data(payload, "elevenlabs", spec["model"], output)
+        data["character_count"] = payload["character_count"]
+        for name in ("history-item-id", "request-id", "character-cost"):
+            if name in headers:
+                data[name.replace("-", "_")] = headers[name][:120]
+        return Result(data, output)
+
+
 class Runway:
     def __init__(self, store):
         self.store = store
@@ -406,7 +508,7 @@ class Runway:
     def run(self, job, root, scratch, stop, progress):
         spec, task = job["spec"], job["remote"]
         payload = spec["payload"]
-        key = os.getenv(KEYS["runway"], "").strip()
+        key = credentials.get(root.parent, "runway")
         if not key:
             raise ProviderError("Runway credential is unavailable", safe=not task)
         headers = {"Authorization": f"Bearer {key}", "X-Runway-Version": RUNWAY_VERSION}
