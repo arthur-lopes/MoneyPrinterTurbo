@@ -1087,6 +1087,96 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     assert owner.get(p + "/proposals/" + proposal["id"]).json()["status"] == "APPLIED"
 
 
+def test_review_notes_pin_assembly_time_and_audit_state_without_editing_the_cut(
+    sandbox,
+):
+    store, actor, pid = sandbox
+    with store.transaction() as db:
+        first = store.add(
+            db,
+            pid,
+            "assembly",
+            "assembly",
+            {"seconds": 16.5, "languages": ["en-US"]},
+            media=uuid4().hex + ".mp4",
+        )
+        latest = store.add(
+            db,
+            pid,
+            "assembly",
+            "assembly",
+            {"seconds": 20, "languages": ["en-US"]},
+            media=uuid4().hex + ".mp4",
+        )
+    app = create_app(
+        store.directory,
+        {"a" * 32: actor, "b" * 32: "another-owner"},
+        worker_enabled=False,
+    )
+    owner = {"Authorization": "Bearer " + "a" * 32}
+    another = {"Authorization": "Bearer " + "b" * 32}
+    client = TestClient(app, base_url="http://127.0.0.1", headers=owner)
+    p = f"/api/projects/{pid}"
+    url = p + f"/assemblies/{first['id']}/notes"
+    latest_url = p + f"/assemblies/{latest['id']}/notes"
+    before = store.snapshot(actor, pid)
+    write = {
+        "request_id": uuid4().hex,
+        "position_ms": 13250,
+        "body": "Explain the source of this observation.",
+    }
+    assert client.post(url, json=dict(write, position_ms=16501)).status_code == 422
+    assert client.post(url, json=dict(write, position_ms=1.5)).status_code == 422
+    assert client.post(url, headers=another, json=write).status_code == 404
+    note = client.post(url, json=write).raise_for_status().json()
+    assert note["state"] == "OPEN" and note["state_version"] == 0
+    assert note["url"].endswith(f"&assembly={first['id']}&t=13250&note={note['id']}")
+    assert client.post(url, json=write).json() == note
+    assert client.post(url, json=dict(write, body="Different")).status_code == 409
+    assert client.post(latest_url, json=write).status_code == 409
+    assert client.get(latest_url).json()["notes"] == []
+
+    state = url + f"/{note['id']}/state"
+    resolved = {"state": "RESOLVED", "expected_version": 0}
+    assert client.put(state, json=resolved).json()["state_version"] == 1
+    assert client.put(state, json=resolved).json()["state_version"] == 1
+    assert (
+        client.put(state, json={"state": "OPEN", "expected_version": 1}).json()[
+            "state_version"
+        ]
+        == 2
+    )
+    assert client.put(state, json=resolved).status_code == 409
+    events = client.get(url + "/" + note["id"]).raise_for_status().json()["events"]
+    assert [(event["seq"], event["state"], event["actor"]) for event in events] == [
+        (1, "RESOLVED", actor),
+        (2, "OPEN", actor),
+    ]
+    with store.transaction(write=False) as db:
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM review_note_events WHERE note=?", (note["id"],)
+            ).fetchone()[0]
+            == 2
+        )
+    assert client.get(url).json()["notes"][0]["actor"] == actor
+    grant = client.post(
+        p + "/agent-access", json={"label": "Notes reader", "scope": "read"}
+    ).json()
+    key = {"Authorization": "Bearer " + grant["token"]}
+    api = f"/api/agent/v1/projects/{pid}/assemblies/{first['id']}/notes"
+    assert (
+        client.get(api, headers=key).raise_for_status().json()["notes"][0]["id"]
+        == note["id"]
+    )
+    assert client.get(url, headers=key).status_code == 401
+    assert client.post(url, headers=key, json=write).status_code == 401
+    assert client.delete(p + "/agent-access/" + grant["id"]).status_code == 200
+    assert client.get(api, headers=key).status_code == 401
+    after = store.snapshot(actor, pid)
+    assert before["versions"] == after["versions"] and before["jobs"] == after["jobs"]
+
+
 def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
     sandbox, monkeypatch
 ):
@@ -1173,6 +1263,11 @@ def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
     assert assembly["data"]["watermark"]
     assert assembly["data"]["languages"] == ["en-US"]
     assert assembly["data"]["retention"][0]["scene"] == "First signal"
+    with store.transaction(write=False) as db:
+        cover = store.asset(db, pid, assembly["data"]["poster"])
+    assert cover["kind"] == "poster"
+    with Image.open(media.asset_path(worker.root, cover["media"])) as poster:
+        assert poster.format == "JPEG" and poster.width == 720 and poster.height < 720
     with av.open(str(media.asset_path(worker.root, assembly["media"]))) as container:
         assert next(container.decode(video=0)).height == 720
         assert len(container.streams.audio) == len(container.streams.subtitles) == 1

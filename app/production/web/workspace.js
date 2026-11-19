@@ -229,10 +229,32 @@ async function quote(jobs) {
 function mediaPreview(item, preload = "metadata") {
   if (!item?.url) return null;
   if (item.kind === "captions") return null;
-  if (["image", "reference", "thumbnail"].includes(item.kind)) return node("img", {
+  if (["image", "reference", "thumbnail", "poster"].includes(item.kind)) return node("img", {
     src: item.url, alt: item.data.title || item.data.headline || tr("Image preview", "Prévia da imagem"), loading: "lazy"});
   const tag = ["voice", "audio"].includes(item.kind) ? "audio" : "video";
   return node(tag, {src: item.url, controls: true, preload, playsinline: true});
+}
+
+function assemblyPlayer(assembly) {
+  const player = mediaPreview(assembly);
+  if (!player) return null;
+  const versions = new Map(project.versions.map(item => [item.id, item]));
+  const take = versions.get(assembly.data.retention?.[0]?.video);
+  const poster = versions.get(assembly.data.poster) || take?.dependencies
+    .map(dep => versions.get(dep.id)).find(item => item?.kind === "image");
+  if (poster?.url) player.poster = poster.url;
+  player.setAttribute("aria-label", tr("Rendered assembly", "Montagem renderizada"));
+  for (const [language, id] of Object.entries(assembly.data.captions || {})) {
+    player.append(node("track", {kind: "subtitles", srclang: language, label: language,
+      src: path("/media/" + id + "?webvtt=true")}));
+  }
+  return player;
+}
+
+function seekAssembly(player, seconds) {
+  const seek = () => { player.currentTime = Math.max(0, Math.min(seconds, player.duration)); };
+  if (player.readyState) seek();
+  else player.addEventListener("loadedmetadata", seek, {once: true});
 }
 
 function revisions(slot) {
@@ -247,7 +269,10 @@ function revisions(slot) {
       mediaPreview(item, "none"), node("details", {}, node("summary", {}, tr("Parameters and reviews", "Parâmetros e revisões")),
         node("pre", {}, json(item.data)), ...reviews.filter(r => r.version === item.id).map(r =>
           node("p", {}, badge(r.decision), " ", r.comment, " · ", r.actor, " · ", new Date(r.created * 1000).toLocaleString()))),
-      item.url && node("a", {href: item.url + "?attachment=true"}, tr("Download version", "Baixar versão"))))));
+      item.url && node("a", {href: item.url + "?attachment=true"}, tr("Download version", "Baixar versão")),
+      item.kind === "assembly" && item.url && node("a", {
+        href: "/?project=" + item.project + "&view=delivery&assembly=" + item.id,
+      }, tr("Open this assembly’s review", "Abrir a revisão desta montagem"))))));
   }
   details.addEventListener("toggle", reveal);
   return details;
@@ -951,7 +976,7 @@ function timelineView() {
   const panel = node("div", {class: "preview-stage"});
   const previewInfo = node("p", {class: "muted preview-info"});
   const draftInfo = node("small", {role: "status"});
-  const rendered = mediaPreview(assembly);
+  const rendered = assemblyPlayer(assembly);
   const versions = new Map(project.versions.map(v => [v.id, v]));
   const renderedRevision = versions.get(assembly?.data.timeline_revision);
   const chapters = (assembly?.data.retention || []).flatMap(entry => {
@@ -1077,13 +1102,6 @@ function timelineView() {
 
   mode.addEventListener("change", () => showPreview(true));
   if (rendered) {
-    const poster = referenceImage(versions.get(chapters[0]?.video));
-    if (poster?.url) rendered.poster = poster.url;
-    for (const [language, id] of Object.entries(assembly.data.captions || {})) {
-      rendered.append(node("track", {kind: "subtitles", srclang: language, label: language,
-        src: path("/media/" + id + "?webvtt=true")}));
-    }
-    rendered.setAttribute("aria-label", tr("Rendered assembly", "Montagem renderizada"));
     rendered.addEventListener("timeupdate", () => {
       if (mode.value !== "assembly" || inspector.contains(document.activeElement)) return;
       const chapter = chapters.find(item => item.start <= rendered.currentTime && rendered.currentTime < item.end);
@@ -1266,33 +1284,126 @@ function timelineView() {
   return result;
 }
 
+function timecode(ms) {
+  const seconds = Math.floor(ms / 1000);
+  return [Math.floor(seconds / 60), seconds % 60].map(n => String(n).padStart(2, "0")).join(":") +
+    "." + String(ms % 1000).padStart(3, "0");
+}
+
+function reviewNotes(assembly, player, items, activeNote) {
+  const endpoint = path("/assemblies/" + assembly.id + "/notes");
+  const list = stack();
+  const count = node("small", {role: "status"});
+  const filter = select([["ALL", tr("All notes", "Todos os comentários")],
+    ["OPEN", tr("Open notes", "Comentários em aberto")], ["RESOLVED", tr("Resolved notes", "Comentários resolvidos")]]);
+  filter.setAttribute("aria-label", tr("Filter review notes", "Filtrar comentários"));
+  function redraw() {
+    count.textContent = items.filter(item => item.state === "OPEN").length + " " + tr("open", "em aberto");
+    filter.hidden = !items.length;
+    const visible = items.filter(item => filter.value === "ALL" || item.state === filter.value)
+      .sort((a, b) => a.position_ms - b.position_ms || a.created - b.created || a.id.localeCompare(b.id));
+    list.replaceChildren(...(visible.length ? visible.map(note => {
+      const resolved = note.state === "RESOLVED";
+      const position = timecode(note.position_ms);
+      const events = node("ul");
+      const history = node("details", {ontoggle: e => {
+        if (!e.currentTarget.open || events.childElementCount) return;
+        execute(async () => {
+          const audit = await api(endpoint + "/" + note.id);
+          events.replaceChildren(...audit.events.map(event => node("li", {},
+            (event.state === "RESOLVED" ? tr("Resolved by ", "Resolvido por ") : tr("Reopened by ", "Reaberto por ")) +
+            event.actor + " · " + new Date(event.created * 1000).toLocaleString())));
+        });
+      }}, node("summary", {}, tr("Note history", "Histórico do comentário")), events);
+      return node("article", {class: "review-note", tabindex: -1, id: "review-note-" + note.id,
+        "aria-current": activeNote === note.id ? "true" : null},
+      row(button(position, () => {
+        player.pause();
+        seekAssembly(player, note.position_ms / 1000);
+        player.scrollIntoView({block: "nearest"});
+        player.focus({preventScroll: true});
+      }), small(resolved ? tr("Resolved", "Resolvido") : tr("Open", "Em aberto"))),
+      node("p", {class: "review-note-text"}, note.body),
+      small(note.actor + " · " + new Date(note.created * 1000).toLocaleString()),
+      note.state_version > 0 && history,
+      row(button(resolved ? tr("Reopen", "Reabrir") : tr("Resolve", "Resolver"), async () => {
+        const next = await api(endpoint + "/" + note.id + "/state", "PUT",
+          {state: resolved ? "OPEN" : "RESOLVED", expected_version: note.state_version});
+        items = items.map(item => item.id === next.id ? next : item);
+        redraw();
+        (ui("review-note-" + note.id) || filter).focus({preventScroll: true});
+      }), button(tr("Copy timestamp link", "Copiar link do trecho"), async () => {
+        await navigator.clipboard.writeText(new URL(note.url, location.origin).href);
+        notify(tr("Timestamp link copied", "Link do trecho copiado"));
+      })));
+    }) : [node("p", {class: "muted"}, tr("No notes here.", "Nenhum comentário nesta lista."))]));
+  }
+  filter.addEventListener("change", redraw);
+  const add = button(tr("Comment at current time", "Comentar neste ponto"), () => {
+    player.pause();
+    const position = Math.min(Math.round(player.currentTime * 1000), Math.round(assembly.data.seconds * 1000));
+    const requestId = crypto.randomUUID().replaceAll("-", "");
+    const text = area("", {maxlength: 4000});
+    modal(tr("Note at ", "Comentário em ") + timecode(position),
+      label(tr("Review note", "Comentário de revisão"), text), [
+        button(tr("Save note", "Salvar comentário"), async () => {
+          if (!text.value.trim()) throw new Error(tr("Write a review note", "Escreva um comentário de revisão"));
+          const saved = await api(endpoint, "POST", {request_id: requestId, position_ms: position, body: text.value});
+          items = [...items.filter(item => item.id !== saved.id), saved];
+          filter.value = "ALL";
+          activeNote = saved.id;
+          ui("dialog").close();
+          redraw();
+          ui("review-note-" + saved.id)?.focus({preventScroll: true});
+        }, true),
+      ]);
+    text.focus();
+  }, true);
+  redraw();
+  return {add, panel: card(row(node("h2", {}, tr("Review notes", "Comentários da montagem")), count, filter), list)};
+}
+
 async function deliveryView() {
   const target = projectId;
   const endpoint = path("/delivery");
-  const plan = await api(endpoint);
+  const query = new URLSearchParams(location.search);
+  const requested = query.get("assembly");
+  const latest = current("assembly"), exported = current("export");
+  const linked = requested && project.versions.find(item => item.id === requested && item.kind === "assembly" && item.url);
+  const assembly = linked || latest;
+  const historic = linked && linked.id !== latest?.id;
+  const [plan, annotation] = await Promise.all([
+    historic ? null : api(endpoint),
+    assembly?.url ? api(path("/assemblies/" + assembly.id + "/notes")) : null,
+  ]);
   if (target !== projectId) return null;
-  const assembly = current("assembly"), exported = current("export");
-  const matching = plan.revision && assembly?.fresh && assembly.data.timeline_revision === plan.revision;
+  const matching = plan?.revision && assembly?.fresh && assembly.data.timeline_revision === plan.revision;
   const final = matching && !assembly.data.watermark;
   const delivered = final && exported?.fresh && exported.data.timeline_revision === plan.revision;
-  const player = mediaPreview(assembly);
-  player?.setAttribute("aria-label", tr("Delivery assembly", "Montagem da entrega"));
+  const player = assemblyPlayer(assembly);
+  const timestamp = query.get("t");
+  const marked = linked && annotation?.notes.find(note => note.id === query.get("note"));
+  const position = marked?.position_ms ?? (/^\d{1,10}$/.test(timestamp || "") ? Number(timestamp) : null);
+  if (player && linked && position !== null) seekAssembly(player, position / 1000);
+  const feedback = player && annotation && reviewNotes(assembly, player, annotation.notes, marked?.id);
   const preview = player && card(node("div", {class: "preview-stage"}, player), row(assetBadge(assembly),
     small(tr("Assembly v", "Montagem v") + assembly.seq),
     matching && small(tr("Saved cut v", "Corte salvo v") + plan.seq),
-    !matching && small(tr("Earlier assembly", "Montagem anterior"))));
-  for (const [language, id] of Object.entries(assembly?.data.captions || {})) {
-    player?.append(node("track", {kind: "subtitles", srclang: language, label: language, src: path("/media/" + id + "?webvtt=true")}));
-  }
+    (historic || !matching) && small(tr("Earlier assembly", "Montagem anterior")), feedback?.add));
   const files = (item, currentDelivery) => item && row(
     node("a", {href: item.url + "?attachment=true"}, currentDelivery ?
       tr("Download final MP4", "Baixar MP4 final") : tr("Download existing MP4", "Baixar MP4 existente")),
     ...Object.entries(item.data.captions || {}).map(([language, id]) => node("a",
       {href: path("/media/" + id + "?attachment=true")}, language + " · SRT")));
   const editor = button(tr("Open editor", "Abrir editor"), () => navigate("timeline"));
-  const heading = title(tr("Delivery review", "Revisão da entrega"), editor);
+  const heading = stack(title(tr("Delivery review", "Revisão da entrega"), editor),
+    requested && !linked && node("p", {role: "status"}, tr(
+      "This assembly is unavailable in the project.", "A montagem do link está indisponível neste projeto.")));
+  if (historic) return stack(title(tr("Review assembly v", "Revisão da montagem v") + assembly.seq,
+    node("a", {href: "/?project=" + target + "&view=delivery"}, tr("Current delivery", "Entrega atual"))),
+    preview, feedback?.panel);
   if (plan.blocked) return stack(heading, card(node("p", {role: "status"}, plan.blocked),
-    files(exported, false)), preview);
+    files(exported, false)), preview, feedback?.panel);
 
   const materialNames = {scene: ["Storyboard", "Storyboard"], image: ["Reference frame", "Quadro de referência"],
     video: ["Take", "Tomada"], voice: ["Narration", "Narração"], translation: ["Translation", "Tradução"],
@@ -1303,9 +1414,7 @@ async function deliveryView() {
   const active = project.jobs.find(job => ["assembly", "export"].includes(job.operation) &&
     ["DRAFT", "GENERATING"].includes(job.status));
   const chapter = scene => button(tr("Go to scene", "Ir ao trecho"), () => {
-    const seek = () => { player.currentTime = Math.min(scene.start, player.duration); };
-    if (player.readyState) seek();
-    else player.addEventListener("loadedmetadata", seek, {once: true});
+    seekAssembly(player, scene.start);
     player.scrollIntoView({block: "nearest"});
     player.focus({preventScroll: true});
   });
@@ -1367,7 +1476,7 @@ async function deliveryView() {
   const delivery = card(node("h2", {}, tr("Assembly and export", "Montagem e exportação")),
     small([tr("Cut v", "Corte v") + plan.seq, plan.aspect, plan.resolution + "p", plan.languages.join(", ")].join(" · ")),
     action, !delivered && files(exported, false));
-  return stack(heading, preview, delivery, checklist, assembly && revisions("assembly"), jobHistory());
+  return stack(heading, preview, delivery, feedback?.panel, checklist, assembly && revisions("assembly"), jobHistory());
 }
 
 function jobHistory() {
@@ -1676,8 +1785,8 @@ function agentAccessView() {
     if (panel.open) execute(load);
   });
   body.append(
-    node("p", {}, tr("Give an agent access to this project's media and timeline. Edit proposals await your decision.",
-      "Dê acesso às mídias e à linha do tempo deste projeto. As propostas de edição aguardam sua decisão.")),
+    node("p", {}, tr("Give an agent access to this project's media, timeline and review notes. Edit proposals await your decision.",
+      "Dê acesso às mídias, à linha do tempo e aos comentários de revisão deste projeto. As propostas de edição aguardam sua decisão.")),
     node("form", {onsubmit: event => {
       event.preventDefault();
       execute(async () => {
@@ -1849,6 +1958,9 @@ function render() {
   else url.searchParams.delete("project");
   url.searchParams.set("view", page);
   if (page !== "proposals") url.searchParams.delete("proposal");
+  if (page !== "delivery") {
+    for (const key of ["assembly", "t", "note"]) url.searchParams.delete(key);
+  }
   if (url.href !== location.href) history.replaceState(null, "", url);
   if (project) {
     const switcher = select(projects.map(p => [p.id, p.data.title]), projectId);

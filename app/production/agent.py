@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pydantic import Field, model_validator
 
-from . import models as m
+from . import models as m, review_notes
 from .store import RuleError, encode, unpack
 
 
@@ -195,6 +195,7 @@ class AgentProjects:
                     "revision": assembly["data"].get("timeline_revision"),
                     "fresh": self.store.fresh(db, assembly),
                     "url": prefix + assembly["id"],
+                    "notes_url": f"/api/agent/v1/projects/{pid}/assemblies/{assembly['id']}/notes",
                 },
                 "scenes": scenes,
             }
@@ -203,6 +204,11 @@ class AgentProjects:
         with self.store.transaction(write=False) as db:
             self._grant(db, pid, digest)
             return self.store.asset(db, pid, version)
+
+    def notes(self, pid, digest, version):
+        with self.store.transaction(write=False) as db:
+            self._grant(db, pid, digest)
+            return review_notes.list_notes(self.store, db, pid, version)
 
     def validate(self, pid, digest, request):
         with self.store.transaction(write=False) as db:

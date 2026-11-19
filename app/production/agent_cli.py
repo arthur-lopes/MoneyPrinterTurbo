@@ -33,6 +33,9 @@ def main(argv=None):
     parser.add_argument("--project-url", required=True, type=project_url)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("context", help="Read the project and current cut")
+    commands.add_parser("notes", help="Read review notes on an assembly").add_argument(
+        "assembly"
+    )
     for command in ("validate", "submit"):
         commands.add_parser(
             command, help=f"{command.capitalize()} an edit plan"
@@ -51,6 +54,12 @@ def main(argv=None):
         ) as client:
             if args.command == "context":
                 response = client.get(args.project_url)
+            elif args.command == "notes":
+                if not re.fullmatch(r"[a-f0-9]{32}", args.assembly):
+                    parser.error("Use the assembly ID returned by context")
+                response = client.get(
+                    f"{args.project_url}/assemblies/{args.assembly}/notes"
+                )
             elif args.command == "status":
                 if not re.fullmatch(r"[a-f0-9]{32}", args.proposal):
                     parser.error("Use the proposal ID returned by submit")

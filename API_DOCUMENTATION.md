@@ -25,6 +25,9 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | GET /api/projects/{project}/delivery | Review the current saved cut, its scene timings, exact material versions and output settings. |
 | POST /api/projects/{project}/delivery/materials | Approve the materials of selected `scenes` with the saved `revision`, matching `versions` and `confirmed: true`. |
 | POST /api/projects/{project}/delivery/prepare | After material approval, save the unwatermarked cut with the same `revision`, all its material `versions` and `confirmed: true`. |
+| GET, POST /api/projects/{project}/assemblies/{version}/notes | List timestamped review notes on one assembly or add `body`, integer `position_ms` and a `request_id`. |
+| GET /api/projects/{project}/assemblies/{version}/notes/{note} | Read a note with its resolution and reopening history. |
+| PUT /api/projects/{project}/assemblies/{version}/notes/{note}/state | Set `state` to `OPEN` or `RESOLVED` using the note's last `state_version` as `expected_version`. |
 | POST /api/projects/{project}/quotes | Estimate one or more operations in `jobs` without queuing them. |
 | POST /api/projects/{project}/quotes/{quote}/authorize | Confirm with `confirmed: true` and integer `maximum`. Repeating the same confirmation returns the same jobs. |
 | GET /api/projects/{project}/quotes/{quote} | Read the archived job inputs, estimate, and authorization decision. |
@@ -46,18 +49,21 @@ Copy the current timeline's `ETag` into `If-Match` when saving, or pass `If-None
 
 The delivery screen reviews the storyboard, reference frames, takes and narration for the selected cut. It records the operator and source cut in material approval events. Delivery preparation binds the reviewed inputs to its saved revision, so changed inputs require a new preparation before rendering. The owner quotes and authorizes the unwatermarked assembly, reviews its MP4, then authorizes the export of that approved version.
 
+Review notes stay on their rendered assembly, including when a later cut becomes current. Their `url` opens the exact version and timestamp. Repeat the same note request with its original `request_id` and fields to recover its receipt. Saving or resolving a note leaves the video, cost and approval state unchanged.
+
 For a subtitle-only correction, set the scene's `clips[].captions` entry to a map such as `{"pt-BR": "Texto corrigido."}`. The existing audio and scene timing are reused. Request `?webvtt=true` on a caption media URL to load the same cues in a browser.
 
 Use `provider: "codex"` for research, scripts, and translations. The quote marks the item `billing: "subscription"` and still requires confirmation. The monetary estimate covers direct API spend. ChatGPT manages its own usage allowance, credits, and automatic reload.
 
 ## Project agent API
 
-The owner creates an expiring credential in **Project settings → Agent access**. `read` permits project context and media. `propose` also permits validating and submitting edit plans and reading that credential's receipts. Use `Authorization: Bearer <agent-token>` over HTTPS. The owner manages credentials independently of the project account.
+The owner creates an expiring credential in **Project settings → Agent access**. `read` permits project context, media and review notes. `propose` also permits validating and submitting edit plans and reading that credential's receipts. Use `Authorization: Bearer <agent-token>` over HTTPS. The owner manages credentials independently of the project account.
 
 | Method and path | Behavior |
 | --- | --- |
 | GET /api/agent/v1/projects/{project} | Read sources, script, saved timeline, scene IDs, eligible takes and the latest preview. |
 | GET, HEAD /api/agent/v1/projects/{project}/media/{version} | Read project media with the same project credential. |
+| GET /api/agent/v1/projects/{project}/assemblies/{version}/notes | Read timestamped review notes for an assembly in the granted project. |
 | POST /api/agent/v1/projects/{project}/proposals/validate | Compile the candidate against the current timeline and media approvals. Returns a diff and an input fingerprint. |
 | POST /api/agent/v1/projects/{project}/proposals | Submit a validated edit for owner review. Include a unique `request_id` and optionally the validation's `fingerprint` as `expected_fingerprint`. Reuse both the request ID and the payload when retrying. |
 | GET /api/agent/v1/projects/{project}/proposals/{proposal} | Read that credential's submission and the owner's decision. |
@@ -67,6 +73,7 @@ In the proposal, set `base_revision` to the ID returned by context and provide a
 ```powershell
 # Set MPT_AGENT_TOKEN in the process environment from the issued credential.
 python -m app.production.agent_cli --project-url $projectApi context
+python -m app.production.agent_cli --project-url $projectApi notes $assemblyId
 python -m app.production.agent_cli --project-url $projectApi validate edit.json
 python -m app.production.agent_cli --project-url $projectApi submit edit.json
 python -m app.production.agent_cli --project-url $projectApi status $proposalId

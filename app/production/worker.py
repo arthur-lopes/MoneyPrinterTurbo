@@ -99,7 +99,12 @@ class Worker:
                     for entry in result.draft_scenes
                 ]
                 published = self.store.complete(
-                    job, result.data, artifact, captions, draft_scenes=draft_scenes
+                    job,
+                    result.data,
+                    artifact,
+                    captions,
+                    draft_scenes=draft_scenes,
+                    poster=publish(result.poster) if result.poster else None,
                 )
         except Deferred as exc:
             self.store.defer(job, exc.delay, exc.progress)

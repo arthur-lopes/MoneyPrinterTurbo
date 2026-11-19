@@ -32,6 +32,7 @@ class Result:
     path: Path | None = None
     captions: dict[str, Path] = field(default_factory=dict)
     draft_scenes: list[dict] = field(default_factory=list)
+    poster: Path | None = None
 
 
 class ProviderError(Exception):
@@ -316,6 +317,32 @@ class Local:
             for i, lang in enumerate(timeline["languages"])
             if timeline["subtitles"]
         }
+        cover = scratch / "poster.jpg"
+        try:
+            media.ffmpeg(
+                [
+                    "-ss",
+                    max(0, min(0.35, duration - 0.08)),
+                    "-i",
+                    output,
+                    "-frames:v",
+                    1,
+                    "-vf",
+                    "scale=720:720:force_original_aspect_ratio=decrease:force_divisible_by=2",
+                    "-q:v",
+                    3,
+                    "-threads",
+                    1,
+                    cover,
+                ],
+                cwd=scratch,
+                stop=stop,
+                timeout=min(timeout, 15),
+            )
+        except media.Stopped:
+            raise
+        except media.MediaError:
+            cover = None
         return Result(
             {
                 "seconds": duration,
@@ -333,6 +360,7 @@ class Local:
             },
             output,
             captions,
+            poster=cover if cover and cover.is_file() else None,
         )
 
     def _rough_cut(self, payload, scratch, stop, timeout, progress):

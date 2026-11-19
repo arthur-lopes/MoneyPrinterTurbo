@@ -1052,7 +1052,9 @@ class Workbench(Store):
         )
         return data, deps
 
-    def complete(self, job, data, media, captions=None, *, draft_scenes=None):
+    def complete(
+        self, job, data, media, captions=None, *, draft_scenes=None, poster=None
+    ):
         with self.transaction() as db:
             pid = job["project"]
             current = self._job(db, pid, job["id"])
@@ -1089,6 +1091,18 @@ class Workbench(Store):
                         for lang, name in captions.items()
                     }
                     data = dict(data, captions=caption_versions)
+                if poster:
+                    cover = self.add(
+                        db,
+                        pid,
+                        f"poster/{job['id']}",
+                        "poster",
+                        {},
+                        deps,
+                        poster,
+                        job["id"],
+                    )
+                    data = dict(data, poster=cover["id"])
                 item = self.add(
                     db, pid, job["slot"], kind, data, deps, media, job["id"]
                 )

@@ -34,6 +34,17 @@ CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY, version TEXT NOT NULL REFERENCES versions(id),
     actor TEXT NOT NULL, decision TEXT NOT NULL, comment TEXT NOT NULL, created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS review_notes (
+    id TEXT PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(id),
+    assembly TEXT NOT NULL REFERENCES versions(id), actor TEXT NOT NULL, request_id TEXT NOT NULL,
+    position_ms INTEGER NOT NULL, body TEXT NOT NULL, created REAL NOT NULL,
+    UNIQUE(project, actor, request_id)
+);
+CREATE TABLE IF NOT EXISTS review_note_events (
+    note TEXT NOT NULL REFERENCES review_notes(id), seq INTEGER NOT NULL,
+    state TEXT NOT NULL, actor TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY(note, seq)
+);
+CREATE INDEX IF NOT EXISTS assembly_review_notes ON review_notes(project, assembly, position_ms);
 CREATE TABLE IF NOT EXISTS providers (
     owner TEXT NOT NULL, provider TEXT NOT NULL, operation TEXT NOT NULL, currency TEXT NOT NULL,
     data TEXT NOT NULL, PRIMARY KEY(owner, provider, operation, currency)

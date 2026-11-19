@@ -30,6 +30,7 @@ from . import (
     codex_cli,
     credentials,
     delivery,
+    review_notes,
     editorial,
     media,
     thumbnails,
@@ -141,6 +142,7 @@ def create_app(
     store = Workbench(Path(directory))
     project_agents = agent.AgentProjects(store)
     deliveries = delivery.Delivery(store)
+    notes = review_notes.ReviewNotes(store)
     worker = Worker(store)
     sessions = {}
     sessions_lock = Lock()
@@ -583,6 +585,32 @@ def create_app(
     ):
         return deliveries.prepare(actor, pid, body)
 
+    @app.get("/api/projects/{pid}/assemblies/{version}/notes")
+    def list_review_notes(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
+        return notes.list(actor, pid, version)
+
+    @app.post("/api/projects/{pid}/assemblies/{version}/notes")
+    def add_review_note(
+        pid: m.Id, version: m.Id, body: review_notes.Note, actor=Depends(authenticated)
+    ):
+        return notes.create(actor, pid, version, body)
+
+    @app.get("/api/projects/{pid}/assemblies/{version}/notes/{note}")
+    def review_note_history(
+        pid: m.Id, version: m.Id, note: m.Id, actor=Depends(authenticated)
+    ):
+        return notes.history(actor, pid, version, note)
+
+    @app.put("/api/projects/{pid}/assemblies/{version}/notes/{note}/state")
+    def update_review_note(
+        pid: m.Id,
+        version: m.Id,
+        note: m.Id,
+        body: review_notes.NoteState,
+        actor=Depends(authenticated),
+    ):
+        return notes.change_state(actor, pid, version, note, body)
+
     @app.get("/api/projects/{pid}/agent-access")
     def list_agent_access(pid: m.Id, actor=Depends(authenticated)):
         return project_agents.access(actor, pid)
@@ -613,6 +641,12 @@ def create_app(
     @app.get("/api/agent/v1/projects/{pid}")
     def agent_context(pid: m.Id, digest=Depends(agent_credential)):
         return project_agents.context(pid, digest)
+
+    @app.get("/api/agent/v1/projects/{pid}/assemblies/{version}/notes")
+    def list_agent_review_notes(
+        pid: m.Id, version: m.Id, digest=Depends(agent_credential)
+    ):
+        return project_agents.notes(pid, digest, version)
 
     @app.post("/api/agent/v1/projects/{pid}/proposals/validate")
     def validate_proposal(
