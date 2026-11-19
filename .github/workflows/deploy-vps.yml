@@ -35,7 +35,9 @@ jobs:
           uv build --wheel --out-dir "$RUNNER_TEMP/release"
           cp pyproject.toml uv.lock "$RUNNER_TEMP/release/"
           printf '%s\n' "$GITHUB_SHA" >"$RUNNER_TEMP/release/REVISION"
-          tar -czf "$RUNNER_TEMP/moneyprinter.tgz" -C "$RUNNER_TEMP/release" pyproject.toml uv.lock REVISION +            "$(basename "$RUNNER_TEMP"/release/mpt-*.whl)"
+          wheels=("$RUNNER_TEMP"/release/mpt-*.whl)
+          [[ "${#wheels[@]}" = 1 && -f "${wheels[0]}" ]]
+          tar -czf "$RUNNER_TEMP/moneyprinter.tgz" -C "$RUNNER_TEMP/release" pyproject.toml uv.lock REVISION "${wheels[0]##*/}"
       - name: Activate the main revision and verify the live service
         shell: bash
         env:
