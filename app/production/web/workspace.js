@@ -9,6 +9,7 @@ let loginMethod = "token";
 let providerCurrency = null;
 let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null, timelineBase = null;
 let editing = false, polling = false;
+let activeScenePreview, editorPreview;
 let experimentVersion = null;
 let youtubeVersion = null;
 
@@ -1134,17 +1135,27 @@ function timelineView() {
   const previewInfo = node("p", {class: "muted preview-info"});
   const draftInfo = node("small", {role: "status"});
   const rendered = assemblyPlayer(assembly);
+  const assemblyBadge = assetBadge(assembly);
   const versions = new Map(project.versions.map(v => [v.id, v]));
   const renderedRevision = versions.get(assembly?.data.timeline_revision);
   const chapters = (assembly?.data.retention || []).flatMap(entry => {
     const slot = versions.get(entry.video)?.slot;
     return slot?.startsWith("video/") ? [{...entry, sceneId: slot.slice(6)}] : [];
   });
+  const remembered = editorPreview?.project === projectId ? editorPreview : {};
   const mode = select([
     ...(rendered ? [["assembly", tr("Latest assembly", "Última montagem")]] : []),
-    ["clip", tr("Selected take", "Tomada selecionada")],
-  ], rendered ? "assembly" : "clip");
+    ["scene", tr("Live scene", "Prévia da cena")],
+    ["clip", tr("Original take", "Tomada original")],
+  ], remembered.mode === "scene" || remembered.mode === "clip" ? remembered.mode : rendered ? "assembly" : "clip");
   mode.setAttribute("aria-label", tr("Preview source", "Fonte da prévia"));
+  const interfaceLanguage = locale === "pt" ? "pt-BR" : "en-US";
+  const previewLanguage = select([]);
+  const languageField = label(tr("Preview language", "Idioma da prévia"), previewLanguage);
+  languageField.classList.add("scene-preview-language");
+  const scenePlayer = createScenePreview();
+  activeScenePreview = scenePlayer;
+  let sceneRequest = 0, sceneTimer, sceneKey, previewLanguages = [];
   let previewMedia, clipPreview, clipPreviewId;
 
   function footage(clip) {
@@ -1171,10 +1182,66 @@ function timelineView() {
     }, {once: true});
   }
 
+  function syncPreviewLanguages() {
+    const languages = draft.languages.length ? draft.languages : project.data.languages;
+    if (languages.join() !== previewLanguages.join()) {
+      const preferred = [previewLanguage.value, remembered.language, interfaceLanguage].find(lang => languages.includes(lang));
+      previewLanguage.replaceChildren(...languages.map(lang => node("option", {value: lang}, lang)));
+      previewLanguage.value = preferred || languages[0];
+      previewLanguages = [...languages];
+    }
+    languageField.hidden = mode.value !== "scene" || previewLanguages.length < 2;
+  }
+
+  function updateScenePreview() {
+    syncPreviewLanguages();
+    const clip = draft.clips[selectedClip];
+    if (mode.value !== "scene" || !clip) return;
+    editorPreview = {project: projectId, mode: mode.value, language: previewLanguage.value};
+    const spec = {clip, language: previewLanguage.value, aspect: draft.aspect,
+      resolution: draft.resolution, subtitles: draft.subtitles, watermark: draft.watermark};
+    const key = JSON.stringify(spec);
+    if (key === sceneKey) return;
+    sceneKey = key;
+    const request = ++sceneRequest;
+    const stillSelected = () => activeScenePreview === scenePlayer && request === sceneRequest && mode.value === "scene";
+    const endpoint = path("/timeline/scene-preview");
+    scenePlayer.updating();
+    clearTimeout(sceneTimer);
+    sceneTimer = setTimeout(async () => {
+      if (!stillSelected()) return;
+      try {
+        const plan = await api(endpoint, "POST", JSON.parse(key));
+        if (stillSelected()) scenePlayer.apply(plan);
+      } catch (error) {
+        if (stillSelected()) {
+          sceneKey = null;
+          scenePlayer.error(error.message);
+        }
+      }
+    }, 120);
+  }
+
+  function useScenePreview(lang) {
+    if (lang && !previewLanguages.includes(lang)) return;
+    if (lang) previewLanguage.value = lang;
+    mode.value = "scene";
+    showPreview();
+  }
+
   function showPreview(seekToScene = false) {
     const clip = draft.clips[selectedClip];
     let media = rendered;
-    if (mode.value === "clip") {
+    syncPreviewLanguages();
+    editorPreview = {project: projectId, mode: mode.value, language: previewLanguage.value};
+    assemblyBadge.hidden = mode.value !== "assembly";
+    if (mode.value === "scene") {
+      media = scenePlayer.element;
+      previewInfo.textContent = tr("Cut, narration and captions. Check the music, effects and transitions in the assembly.",
+        "Corte, narração e legendas. Confira trilha, efeitos e transições na montagem.");
+      if (clip) updateScenePreview();
+      else scenePlayer.error(tr("Select a scene to preview it.", "Escolha uma cena para assistir aqui."));
+    } else if (mode.value === "clip") {
       const source = footage(clip);
       if (source?.id !== clipPreviewId) {
         clipPreviewId = source?.id;
@@ -1200,7 +1267,12 @@ function timelineView() {
       if (seekToScene && chapter) seek(media, chapter.start);
     }
     if (media === previewMedia && panel.hasChildNodes()) return;
-    previewMedia?.pause();
+    if (previewMedia === scenePlayer.element) {
+      clearTimeout(sceneTimer);
+      sceneRequest++;
+      sceneKey = null;
+      scenePlayer.halt();
+    } else previewMedia?.pause();
     panel.replaceChildren(media || node("p", {class: "muted"},
       tr("Your preview will appear here.", "Sua prévia vai aparecer aqui.")));
     previewMedia = media;
@@ -1208,13 +1280,20 @@ function timelineView() {
 
   function captionEditor(clip) {
     const languages = project.data.languages;
-    const interfaceLanguage = locale === "pt" ? "pt-BR" : "en-US";
-    const language = select(languages.map(lang => [lang, lang]), languages.includes(interfaceLanguage) ?
-      interfaceLanguage : languages[0]);
+    const language = select(languages.map(lang => [lang, lang]), previewLanguage.value);
     const text = area("", {rows: 4, maxlength: 8000});
+    const hint = small("");
     const narration = () => current("voice/" + clip.scene + "/" + language.value)?.data.narration || "";
-    const showText = () => { text.value = clip.captions?.[language.value] ?? narration(); };
-    language.addEventListener("change", showText);
+    const showText = () => {
+      text.value = clip.captions?.[language.value] ?? narration();
+      hint.textContent = previewLanguages.includes(language.value) ?
+        tr("Caption edits keep the recorded narration.", "A edição da legenda mantém a narração gravada.") :
+        tr("Enable this language in output settings to preview it.", "Inclua este idioma na saída para conferi-lo na prévia.");
+    };
+    language.addEventListener("change", () => {
+      showText();
+      if (mode.value === "scene") useScenePreview(language.value);
+    });
     text.addEventListener("input", () => {
       const value = text.value.trim();
       if (value && value !== narration()) {
@@ -1224,16 +1303,16 @@ function timelineView() {
         delete clip.captions[language.value];
         if (!Object.keys(clip.captions).length) delete clip.captions;
       }
+      useScenePreview(language.value);
     });
     showText();
     return node("details", {}, node("summary", {}, tr("Scene captions", "Legenda da cena")),
       stack(label(tr("Caption language", "Idioma da legenda"), language),
-        label(tr("Caption text", "Texto da legenda"), text),
-        small(tr("This text appears on the next render. The existing narration is reused.",
-          "O texto entra na próxima renderização. A narração existente será reutilizada."))));
+        label(tr("Caption text", "Texto da legenda"), text), hint));
   }
 
   function selectClip(index, seekToScene) {
+    syncPreviewLanguages();
     selectedClip = index;
     [...sequence.children].forEach((control, i) =>
       control.setAttribute("aria-pressed", String(i === index)));
@@ -1258,6 +1337,7 @@ function timelineView() {
   }
 
   mode.addEventListener("change", () => showPreview(true));
+  previewLanguage.addEventListener("change", updateScenePreview);
   if (rendered) {
     rendered.addEventListener("timeupdate", () => {
       if (mode.value !== "assembly" || inspector.contains(document.activeElement)) return;
@@ -1276,12 +1356,13 @@ function timelineView() {
     }
     video.addEventListener("change", () => {
       clip.video = video.value || null;
-      mode.value = "clip";
-      showPreview(true);
+      useScenePreview();
     });
     const numeric = (key, en, pt, optional = false) => label(tr(en, pt), input(clip[key] ?? "", {
-      type: "number", min: 0, step: ".05", oninput: e => { clip[key] = optional && !e.target.value ? null : Number(e.target.value); },
-      onchange: () => { if (key === "trim" && mode.value === "clip") seek(clipPreview, clip.trim); },
+      type: "number", min: 0, step: ".05", oninput: e => {
+        clip[key] = optional && !e.target.value ? null : Number(e.target.value);
+        useScenePreview();
+      },
     }));
     const transition = select([["cut", tr("Cut", "Corte")], ["fade", tr("Fade to black", "Fade para preto")]], clip.transition);
     transition.addEventListener("change", () => { clip.transition = transition.value; });
@@ -1414,7 +1495,7 @@ function timelineView() {
       navigate("delivery");
     }), activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
   const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
-    node("div", {class: "stack preview-stack"}, panel, row(mode, assetBadge(assembly)), previewInfo), sequence, inspector));
+    node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo), sequence, inspector));
   const result = stack(title(project.data.title), rough || content, !rough && row(draftInfo), !rough && controls,
     assembly && card(node("h2", {}, tr("Review rendered version", "Revisar versão renderizada")), reviewControls(assembly),
       row(node("a", {href: assembly.url + "?attachment=true"}, tr("Download assembly", "Baixar montagem")),
@@ -1429,6 +1510,7 @@ function timelineView() {
     node("details", {}, node("summary", {}, tr("Audience retention", "Retenção de público")), retentionPanel(assembly)), jobHistory());
   const refreshTimelineState = () => {
     refreshDraftInfo();
+    updateScenePreview();
     const next = missingInput();
     missingButton.textContent = next ? tr(...previewActions[next]) : "";
     missingButton.hidden = !next;
@@ -2448,6 +2530,8 @@ function settingsView() {
 }
 
 function render() {
+  activeScenePreview?.dispose();
+  activeScenePreview = null;
   editing = false;
   document.documentElement.lang = locale === "pt" ? "pt-BR" : "en";
   ui("skip-main").textContent = tr("Skip to main content", "Pular para o conteúdo principal");

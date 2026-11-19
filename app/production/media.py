@@ -387,22 +387,25 @@ def timestamp(seconds):
     )
 
 
+def caption_cues(clip, language, elapsed=0):
+    voice = clip["audio"][language]
+    words = clip.get("captions", {}).get(language, voice["narration"]).split()
+    lines = textwrap.wrap(" ".join(words), width=66)
+    if lines:
+        start = elapsed + clip["narration_offset"]
+        span = voice["seconds"] / len(lines)
+        for line in lines:
+            yield start, start + span, line
+            start += span
+
+
 def captions(path, timeline, language):
     elapsed, index = 0, 1
     blocks = []
     for clip in timeline["clips"]:
-        voice = clip["audio"][language]
-        words = clip.get("captions", {}).get(language, voice["narration"]).split()
-        lines = textwrap.wrap(" ".join(words), width=66)
-        if lines:
-            start = elapsed + clip["narration_offset"]
-            span = voice["seconds"] / len(lines)
-            for line in lines:
-                blocks.append(
-                    f"{index}\n{timestamp(start)} --> {timestamp(start + span)}\n{line}\n"
-                )
-                start += span
-                index += 1
+        for start, end, line in caption_cues(clip, language, elapsed):
+            blocks.append(f"{index}\n{timestamp(start)} --> {timestamp(end)}\n{line}\n")
+            index += 1
         elapsed += clip["seconds"]
     if not write_subtitle_file(path, "\n".join(blocks)):
         raise MediaError("The selected timeline has no subtitle cues")

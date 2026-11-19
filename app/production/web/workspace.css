@@ -96,6 +96,15 @@ dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .preview-stack { grid-area: preview; gap: .5rem; }
 .preview-stage { display: grid; place-items: center; border-radius: .55rem; background: #101517; min-height: 8rem; }
 .preview-stage video { max-height: min(48vh, 36rem); }
+.scene-preview { width: 100%; align-items: center; padding: .55rem; }
+.scene-preview-frame { overflow: hidden; margin-inline: auto; width: min(100%, 80vh); aspect-ratio: 16 / 9; }
+.scene-preview-frame.portrait { width: min(100%, 25vh); aspect-ratio: 9 / 16; }
+.preview-stage .scene-preview-frame video { height: 100%; max-height: none; object-fit: cover; }
+.scene-preview-controls { display: grid; grid-template-columns: auto minmax(2rem, 1fr) auto;
+  align-items: center; gap: .5rem; }
+.scene-preview-controls input { width: 100%; min-block-size: 44px; padding: 0; accent-color: var(--accent); }
+.scene-preview-status:empty { display: none; }
+.scene-preview-language { max-width: 16rem; }
 .preview-stage p { padding: 1rem; text-align: center; margin: 0; }
 .preview-info { font-size: .86rem; margin: 0; }
 .review-scene-picker { flex: 1 1 15rem; }

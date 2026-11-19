@@ -365,7 +365,7 @@ def create_app(
         )
 
     @app.get("/ui/{name}", include_in_schema=False)
-    def static(name: Literal["workspace.js", "workspace.css"]):
+    def static(name: Literal["workspace.js", "workspace.css", "scene-preview.js"]):
         return FileResponse(WEB / name)
 
     @app.get("/api/session")
@@ -667,6 +667,10 @@ def create_app(
                 body.model_dump(),
                 [{"speech": [sid, scene_asset["data"]["narration"]]}],
             )
+
+    @app.post("/api/projects/{pid}/timeline/scene-preview")
+    def preview_scene(pid: m.Id, body: m.ScenePreview, actor=Depends(authenticated)):
+        return store.preview_scene(actor, pid, body)
 
     @app.get("/api/projects/{pid}/timeline")
     def timeline(

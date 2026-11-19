@@ -1609,6 +1609,40 @@ def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
     other = {"Authorization": "Bearer " + "b" * 32}
     path = f"/api/projects/{pid}"
     timeline_url = path + "/timeline"
+    preview_url = timeline_url + "/scene-preview"
+    request = {
+        "clip": {
+            "scene": sid,
+            "video": clip["id"],
+            "trim": 0.05,
+            "seconds": 1.75,
+            "narration_offset": 0.125,
+            "captions": {"pt-BR": "Legenda corrigida."},
+        },
+        "language": "pt-BR",
+    }
+    jobs_before = store.snapshot(actor, pid)["jobs"]
+    preview = client.post(preview_url, headers=auth, json=request).json()
+    pt_voice = head(store, pid, f"voice/{sid}/pt-BR")
+    assert preview == {
+        "take": clip["url"],
+        "voice": pt_voice["url"],
+        "trim": 0.05,
+        "seconds": 1.75,
+        "narration_offset": 0.125,
+        "aspect": "16:9",
+        "cues": [{"start": 0.125, "end": 0.625, "text": "Legenda corrigida."}],
+    }
+    assert client.post(preview_url, headers=other, json=request).status_code == 404
+    assert client.post(preview_url, json=request).status_code == 401
+    invalid = dict(request, clip=dict(request["clip"], trim=1.0))
+    assert client.post(preview_url, headers=auth, json=invalid).status_code == 409
+    no_text = client.post(
+        preview_url, headers=auth, json=dict(request, subtitles=False)
+    )
+    assert no_text.json()["cues"] == []
+    assert store.snapshot(actor, pid)["jobs"] == jobs_before
+    assert client.get(timeline_url, headers=auth).status_code == 404
     creation = {**auth, "If-None-Match": "*"}
     first = client.put(timeline_url, headers=creation, json=timeline)
     assert first.status_code == 200

@@ -324,6 +324,15 @@ class Timeline(Input):
         return self
 
 
+class ScenePreview(Input):
+    clip: Clip
+    language: Language
+    aspect: Literal["16:9", "9:16"] = "16:9"
+    resolution: Literal[720, 1080, 1440, 2160] = 1080
+    subtitles: bool = True
+    watermark: bool = False
+
+
 class DeliveryMetadata(Input):
     title: Short
     description: Text

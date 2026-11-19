@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from . import codex_cli, credentials, experiments, rough_cut, scene_motion
 from .models import GRAPHIC_MODES, HYPERFRAMES_MODES, Scene, Timeline, check_cue_window
+from .media import caption_cues
 from .store import ACTIVE, SCENE_OPERATIONS, RuleError, Store, encode, unpack
 
 
@@ -216,6 +217,100 @@ class Workbench(Store):
             dependency["draft"] = True
         return asset, dependency
 
+    def _timeline_clip(self, db, pid, timeline, clip, deps, *, for_review=False):
+        sid = clip.scene
+        scene, scene_dep = self._timeline_input(
+            db, pid, f"scene/{sid}", timeline.watermark, for_review=for_review
+        )
+        video, video_dep = self._timeline_input(
+            db,
+            pid,
+            f"video/{sid}",
+            timeline.watermark,
+            clip.video,
+            for_review=for_review,
+        )
+        native_width, native_height = (
+            (3840, 2160) if timeline.aspect == "16:9" else (2160, 3840)
+        )
+        if timeline.resolution == 2160 and (
+            video["data"].get("width", 0) < native_width
+            or video["data"].get("height", 0) < native_height
+        ):
+            raise RuleError(
+                "4K export requires approved footage at the selected aspect and resolution"
+            )
+        seconds = clip.seconds or scene["data"]["seconds"]
+        if (
+            clip.trim + seconds > video["data"]["seconds"] + 0.01
+            or clip.narration_offset >= seconds
+        ):
+            raise RuleError(
+                "Clip trim, duration or narration offset exceeds the approved footage"
+            )
+        deps.extend([scene_dep, dict(video_dep, pinned=bool(clip.video))])
+        entry = dict(clip.model_dump(), seconds=seconds, video=video["media"], audio={})
+        voices = {}
+        for language in timeline.languages:
+            voice, voice_dep = self._timeline_input(
+                db,
+                pid,
+                f"voice/{sid}/{language}",
+                timeline.watermark,
+                for_review=for_review,
+            )
+            duration = voice["data"]["seconds"]
+            if duration + clip.narration_offset > seconds + 0.025:
+                raise RuleError(
+                    f"Narration for {scene['data']['title']} ({language}) exceeds the clip. Shorten narration or use longer footage."
+                )
+            deps.append(voice_dep)
+            voices[language] = voice
+            entry["audio"][language] = {
+                "media": voice["media"],
+                "narration": voice["data"]["narration"],
+                "seconds": duration,
+            }
+        if clip.effect:
+            effect = self._attachment(db, pid, clip.effect, "audio")
+            deps.append({"id": effect["id"]})
+            entry["effect"] = effect["media"]
+        return entry, scene, video, voices
+
+    def preview_scene(self, actor, pid, request):
+        timeline = Timeline(
+            clips=[request.clip],
+            languages=[request.language],
+            aspect=request.aspect,
+            resolution=request.resolution,
+            watermark=request.watermark,
+            subtitles=request.subtitles,
+        )
+        with self.transaction(write=False) as db:
+            project = self.project(db, actor, pid)["data"]
+            if request.language not in project[
+                "languages"
+            ] or request.clip.scene not in self.order(db, pid):
+                raise RuleError("Select an active scene and project language", 422)
+            entry, _, video, voices = self._timeline_clip(
+                db, pid, timeline, request.clip, []
+            )
+            voice = voices[request.language]
+        return {
+            "take": video["url"],
+            "voice": voice["url"],
+            "trim": entry["trim"],
+            "seconds": entry["seconds"],
+            "narration_offset": entry["narration_offset"],
+            "aspect": request.aspect,
+            "cues": [
+                {"start": round(start, 3), "end": round(end, 3), "text": text}
+                for start, end, text in caption_cues(entry, request.language)
+            ]
+            if request.subtitles
+            else [],
+        }
+
     def _timeline(self, db, pid, project, timeline, deps, *, for_review=False):
         if not timeline or not set(timeline.languages) <= set(project["languages"]):
             raise RuleError("Choose a timeline and project languages")
@@ -226,64 +321,11 @@ class Workbench(Store):
         clips = []
         retention = []
         position = 0.0
-        native_width, native_height = (
-            (3840, 2160) if timeline.aspect == "16:9" else (2160, 3840)
-        )
         for clip in timeline.clips:
-            sid = clip.scene
-            scene, scene_dep = self._timeline_input(
-                db, pid, f"scene/{sid}", timeline.watermark, for_review=for_review
+            entry, scene, video, _ = self._timeline_clip(
+                db, pid, timeline, clip, deps, for_review=for_review
             )
-            video, video_dep = self._timeline_input(
-                db,
-                pid,
-                f"video/{sid}",
-                timeline.watermark,
-                clip.video,
-                for_review=for_review,
-            )
-            if timeline.resolution == 2160 and (
-                video["data"].get("width", 0) < native_width
-                or video["data"].get("height", 0) < native_height
-            ):
-                raise RuleError(
-                    "4K export requires approved footage at the selected aspect and resolution"
-                )
-            seconds = clip.seconds or scene["data"]["seconds"]
-            if (
-                clip.trim + seconds > video["data"]["seconds"] + 0.01
-                or clip.narration_offset >= seconds
-            ):
-                raise RuleError(
-                    "Clip trim, duration or narration offset exceeds the approved footage"
-                )
-            deps.extend([scene_dep, dict(video_dep, pinned=bool(clip.video))])
-            entry = dict(
-                clip.model_dump(), seconds=seconds, video=video["media"], audio={}
-            )
-            for language in timeline.languages:
-                voice, voice_dep = self._timeline_input(
-                    db,
-                    pid,
-                    f"voice/{sid}/{language}",
-                    timeline.watermark,
-                    for_review=for_review,
-                )
-                duration = voice["data"]["seconds"]
-                if duration + clip.narration_offset > seconds + 0.025:
-                    raise RuleError(
-                        f"Narration for {scene['data']['title']} ({language}) exceeds the clip. Shorten narration or use longer footage."
-                    )
-                deps.append(voice_dep)
-                entry["audio"][language] = {
-                    "media": voice["media"],
-                    "narration": voice["data"]["narration"],
-                    "seconds": duration,
-                }
-            if clip.effect:
-                effect = self._attachment(db, pid, clip.effect, "audio")
-                deps.append({"id": effect["id"]})
-                entry["effect"] = effect["media"]
+            seconds = entry["seconds"]
             clips.append(entry)
             cues = []
             for cue in (video["data"].get("animation") or {}).get("cues", []):
