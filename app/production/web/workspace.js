@@ -4,6 +4,7 @@ const ui = id => document.getElementById(id);
 let locale = localStorage.getItem("mpt-production-language") || "en";
 let projectId = sessionStorage.getItem("mpt-production-project");
 let projects = [], project = null, loggedIn = false, page = "dashboard";
+let loginMethod = "token";
 let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null;
 let editing = false, polling = false;
 
@@ -221,19 +222,26 @@ function importAsset(kind, scene, language) {
 }
 
 function loginView() {
-  const token = input("", {required: true, type: "password", autocomplete: "current-password", minlength: 32});
+  const usePassword = loginMethod === "password";
+  const username = input("", {required: true, name: "username", autocomplete: "username", maxlength: 80});
+  const secret = input("", {
+    required: true, name: usePassword ? "password" : "token", type: "password",
+    autocomplete: "current-password", minlength: usePassword ? 1 : 32, maxlength: 256,
+  });
   return node("div", {class: "login"}, card(node("h1", {}, tr("Production workspace", "Estúdio de produção")),
-    node("p", {class: "muted"}, tr("Sign in using the access token configured for this workstation.",
+    usePassword ? null : node("p", {class: "muted"}, tr("Sign in using the access token configured for this workstation.",
       "Entre com o token de acesso configurado nesta estação.")),
     node("form", {onsubmit: event => {
       event.preventDefault();
       execute(async () => {
-        await api("/api/session", "POST", {token: token.value});
-        token.value = "";
+        const credentials = usePassword ? {username: username.value, password: secret.value} : {token: secret.value};
+        await api("/api/session", "POST", credentials);
+        secret.value = "";
         loggedIn = true;
         await refresh();
       }, event.submitter);
-    }}, label(tr("Access token", "Token de acesso"), token),
+    }}, usePassword ? label(tr("Username", "Usuário"), username) : null,
+    label(usePassword ? tr("Password", "Senha") : tr("Access token", "Token de acesso"), secret),
     node("button", {class: "primary", type: "submit"}, tr("Sign in", "Entrar")))));
 }
 
@@ -809,7 +817,9 @@ function render() {
 
 async function start() {
   try {
-    loggedIn = (await api("/api/session")).authenticated;
+    const session = await api("/api/session");
+    loginMethod = session.login_method || "token";
+    loggedIn = session.authenticated;
     if (loggedIn) await refresh(false);
   } catch {
     loggedIn = false;

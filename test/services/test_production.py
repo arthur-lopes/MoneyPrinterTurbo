@@ -1,6 +1,7 @@
 """Production contracts exercised without credentials or paid requests."""
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 from io import BytesIO
 import json
 from threading import Event
@@ -14,7 +15,7 @@ from PIL import Image
 import pytest
 
 from app.production import adapters, media, models as m
-from app.production.api import create_app
+from app.production.api import PASSWORD_ITERATIONS, PublicLogin, create_app
 from app.production.store import RuleError
 from app.production.workbench import Workbench
 from app.production.worker import Worker
@@ -271,6 +272,61 @@ def test_approving_existing_clip_cancels_queued_replacement(sandbox):
     )
     assert status == "CANCELLED"
     assert head(store, pid, f"video/{sid}")["id"] == clip["id"]
+
+
+def test_public_login_and_loopback_access(tmp_path):
+    origin = "https://studio.example.test"
+    password = "A sample password for the public test account"
+    salt = bytes(range(16))
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PASSWORD_ITERATIONS)
+    public_login = PublicLogin(
+        origin,
+        "arthur",
+        "operator",
+        f"pbkdf2_sha256${PASSWORD_ITERATIONS}${salt.hex()}${digest.hex()}",
+    )
+    token = "a" * 32
+    app = create_app(
+        tmp_path, {token: "operator"}, worker_enabled=False, public_login=public_login
+    )
+    public = TestClient(app, base_url=origin)
+    local = TestClient(app, base_url="http://127.0.0.1")
+    payload = {"username": "arthur", "password": password}
+    headers = {"Origin": origin}
+    authorization = {"Authorization": "Bearer " + token}
+    assert local.get("/api/health").status_code == 200
+    assert local.get("/api/projects", headers=authorization).status_code == 200
+    assert public.get("/api/health").status_code == 404
+    assert public.get("/api/projects", headers=authorization).status_code == 401
+    assert public.get("/api/session").json() == {
+        "authenticated": False,
+        "login_method": "password",
+    }
+    assert public.get("http://studio.example.test/api/session").status_code == 403
+    assert public.post("/api/session", json=payload).status_code == 403
+    assert public.post(
+        "/api/session", json=payload, headers={"Origin": "https://elsewhere.test"}
+    ).status_code == 403
+    assert public.post(
+        "/api/session", json={**payload, "password": "wrong"}, headers=headers
+    ).status_code == 401
+    assert public.post(
+        "/api/session", json={**payload, "password": "x" * 257}, headers=headers
+    ).status_code == 422
+    assert public.post(
+        "/api/session", json={"token": token}, headers=headers
+    ).status_code == 401
+    login = public.post("/api/session", json=payload, headers=headers)
+    assert login.json() == {"actor": "operator"}
+    cookie = login.headers["set-cookie"]
+    assert all(part in cookie.lower() for part in ("httponly", "secure", "samesite=strict"))
+    assert public.get("/api/projects").status_code == 200
+    assert (
+        local.get("/api/projects", headers={"Cookie": cookie.split(";")[0]}).status_code
+        == 401
+    )
+    assert public.delete("/api/session", headers=headers).status_code == 200
+    assert public.get("/api/projects").status_code == 401
 
 
 def test_api_auth_owner_and_cross_site(tmp_path):

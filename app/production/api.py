@@ -1,6 +1,8 @@
-"""Loopback production API and same-origin workspace."""
+"""Production API and same-origin workspace."""
 
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+import hashlib
 import hmac
 import os
 from pathlib import Path
@@ -14,7 +16,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import ValidationError
+from pydantic import Field, SecretStr, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -27,10 +29,47 @@ from .worker import Worker
 WEB = Path(__file__).with_name("web")
 COOKIE = "mpt_production_session"
 MAX_JSON = 1024 * 1024
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+PASSWORD_ITERATIONS = 600_000
 
 
 class Login(m.Input):
-    token: str
+    token: str | None = Field(default=None, max_length=256)
+    username: str | None = Field(default=None, max_length=80)
+    password: SecretStr | None = Field(default=None, max_length=256)
+
+
+@dataclass(frozen=True)
+class PublicLogin:
+    origin: str
+    username: str
+    actor: str
+    password_hash: str = field(repr=False)
+    hostname: str = field(init=False)
+    salt: bytes = field(init=False, repr=False)
+    digest: bytes = field(init=False, repr=False)
+
+    def __post_init__(self):
+        host = re.fullmatch(r"https://([a-z0-9-]+(?:\.[a-z0-9-]+)+)", self.origin)
+        password_hash = re.fullmatch(
+            rf"pbkdf2_sha256\${PASSWORD_ITERATIONS}\$([0-9a-f]{{32}})\$([0-9a-f]{{64}})",
+            self.password_hash,
+        )
+        if not host or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", self.username):
+            raise ValueError("Configure a public HTTPS origin and an operator username")
+        if not password_hash:
+            raise ValueError("Configure a valid PBKDF2-SHA256 operator password hash")
+        object.__setattr__(self, "hostname", host[1])
+        object.__setattr__(self, "salt", bytes.fromhex(password_hash[1]))
+        object.__setattr__(self, "digest", bytes.fromhex(password_hash[2]))
+
+    def authenticate(self, username: str, password: str) -> str | None:
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), self.salt, PASSWORD_ITERATIONS
+        )
+        username_matches = hmac.compare_digest(username.encode(), self.username.encode())
+        password_matches = hmac.compare_digest(digest, self.digest)
+        return self.actor if username_matches and password_matches else None
 
 
 class BulkReview(m.ReviewInput):
@@ -41,10 +80,16 @@ class RateLimit:
     def __init__(self):
         self.windows = {}
         self.lock = Lock()
+        self.next_prune = 0
 
     def hit(self, key, limit, window):
         with self.lock:
             now = time.monotonic()
+            if now >= self.next_prune:
+                self.windows = {
+                    key: value for key, value in self.windows.items() if value[0] > now
+                }
+                self.next_prune = now + 60
             reset, used = self.windows.get(key, (0, 0))
             if reset <= now:
                 reset, used = now + window, 0
@@ -60,6 +105,7 @@ def create_app(
     *,
     worker_enabled=True,
     allowed_hosts=("localhost", "127.0.0.1", "[::1]"),
+    public_login: PublicLogin | None = None,
 ):
     if not tokens or any(
         len(token) < 32 or not token.isascii() or not actor
@@ -87,14 +133,27 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
+    hosts = list(allowed_hosts)
+    if public_login:
+        hosts.append(public_login.hostname)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+
+    def is_public(request):
+        return public_login is not None and request.url.hostname == public_login.hostname
 
     @app.middleware("http")
     async def boundary(request, call_next):
-        method = request.method
-        if method not in {"GET", "HEAD", "OPTIONS"}:
+        public = is_public(request)
+        if public and request.url.scheme != "https":
+            return JSONResponse({"detail": "HTTPS required"}, status_code=403)
+        if request.method not in SAFE_METHODS:
             origin = request.headers.get("origin")
-            if origin and origin != f"http://{request.headers.get('host', '')}":
+            expected_origin = (
+                public_login.origin
+                if public
+                else f"http://{request.headers.get('host', '')}"
+            )
+            if (public or origin) and origin != expected_origin:
                 return JSONResponse({"detail": "Origin forbidden"}, status_code=403)
             if request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"detail": "Origin forbidden"}, status_code=403)
@@ -163,21 +222,25 @@ def create_app(
     def session_actor(request):
         with sessions_lock:
             session = sessions.get(request.cookies.get(COOKIE))
-        return session[0] if session and session[1] >= time.monotonic() else None
+        if session:
+            actor, expires_at, public = session
+            if expires_at >= time.monotonic() and public == is_public(request):
+                return actor
+        return None
 
     def authenticated(request: Request):
         header = request.headers.get("authorization")
         if header:
             actor = (
                 token_actor(header.removeprefix("Bearer "))
-                if header.startswith("Bearer ")
+                if header.startswith("Bearer ") and not is_public(request)
                 else None
             )
         else:
             actor = session_actor(request)
             if (
                 actor
-                and request.method not in {"GET", "HEAD", "OPTIONS"}
+                and request.method not in SAFE_METHODS
                 and not request.headers.get("origin")
             ):
                 raise HTTPException(403, "Same-origin request required")
@@ -197,7 +260,9 @@ def create_app(
         return Response(status_code=204)
 
     @app.get("/api/health")
-    def health():
+    def health(request: Request):
+        if is_public(request):
+            raise HTTPException(404, "Not found")
         # Serialize with job admission so deploys can see the final claim before draining.
         with store.transaction() as db:
             active = db.execute(
@@ -219,23 +284,37 @@ def create_app(
 
     @app.get("/api/session")
     def session(request: Request):
-        return {"authenticated": bool(session_actor(request))}
+        state = {"authenticated": bool(session_actor(request))}
+        if is_public(request):
+            state["login_method"] = "password"
+        return state
 
     @app.post("/api/session")
     def login(payload: Login, request: Request, response: Response):
-        if not limiter.hit(("login", request.client.host), 10, 60):
+        public = is_public(request)
+        if not limiter.hit(("login", public, request.client.host), 10, 60):
             raise HTTPException(429, "Try signing in again in a minute")
-        actor = token_actor(payload.token)
-        if not actor:
-            raise HTTPException(401, "Invalid production access token")
+        if public:
+            if not limiter.hit(("public-login",), 120, 60):
+                raise HTTPException(429, "Try signing in again in a minute")
+            actor = public_login.authenticate(
+                payload.username or "",
+                payload.password.get_secret_value() if payload.password else "",
+            )
+            if not actor:
+                raise HTTPException(401, "Invalid username or password")
+        else:
+            actor = token_actor(payload.token)
+            if not actor:
+                raise HTTPException(401, "Invalid production access token")
         session = secrets.token_urlsafe(32)
         with sessions_lock:
             now = time.monotonic()
-            for expired in [key for key, (_, end) in sessions.items() if end < now]:
+            for expired in [key for key, (_, end, _) in sessions.items() if end < now]:
                 del sessions[expired]
-            sessions[session] = (actor, now + 12 * 60 * 60)
+            sessions[session] = (actor, now + 12 * 60 * 60, public)
         response.set_cookie(
-            COOKIE, session, httponly=True, samesite="strict", max_age=43200
+            COOKIE, session, httponly=True, secure=public, samesite="strict", max_age=43200
         )
         return {"actor": actor}
 
@@ -243,7 +322,9 @@ def create_app(
     def logout(request: Request, response: Response, actor=Depends(authenticated)):
         with sessions_lock:
             sessions.pop(request.cookies.get(COOKIE), None)
-        response.delete_cookie(COOKIE, httponly=True, samesite="strict")
+        response.delete_cookie(
+            COOKIE, httponly=True, secure=is_public(request), samesite="strict"
+        )
         return {"ok": True}
 
     @app.get("/api/projects")

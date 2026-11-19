@@ -53,7 +53,11 @@ The studio finds the native Codex binary on `PATH` or within the official Window
 
 The fork deploys pushes to `main` via [GitHub Actions](.github/workflows/deploy-vps.yml). The workflow tests and packages the exact commit, then verifies the live revision. The deploy waits for running jobs and restores the prior release if activation fails. Data and the Codex sign-in live outside release directories.
 
-The VPS service serves `127.0.0.1:8765`. Forward that port over SSH and open the local URL in a browser. The operator token is stored in `/etc/moneyprinter/service.env` for the VPS administrator. For subscription-backed generation, run `sudo -u moneyprinter env HOME=/var/lib/moneyprinter CODEX_HOME=/var/lib/moneyprinter/codex /opt/moneyprinter/codex/bin/codex login --device-auth` on the VPS and authorize the device on your ChatGPT account.
+The VPS service serves `127.0.0.1:8765`. Forward that port over SSH for local access with the operator token stored in `/etc/moneyprinter/service.env`.
+
+For browser access over HTTPS, configure `MPT_PRODUCTION_PUBLIC_ORIGIN`, `MPT_PRODUCTION_USERNAME`, and `MPT_PRODUCTION_PASSWORD_HASH` in the service environment file. The hash uses `pbkdf2_sha256$600000$<16-byte salt in hex>$<32-byte digest in hex>`. Route the configured hostname through a local TLS proxy that preserves the Host header and sets the forwarded scheme and client address. The public login uses a secure cookie and opens the same workspace as the local operator.
+
+For subscription-backed generation, run `sudo -u moneyprinter env HOME=/var/lib/moneyprinter CODEX_HOME=/var/lib/moneyprinter/codex /opt/moneyprinter/codex/bin/codex login --device-auth` on the VPS and authorize the device on your ChatGPT account.
 
 ## 界面预览 🖥️
 
