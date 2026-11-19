@@ -9,6 +9,8 @@ let loginMethod = "token";
 let providerCurrency = null;
 let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null, timelineBase = null;
 let editing = false, polling = false;
+let experimentVersion = null;
+let youtubeVersion = null;
 
 const tr = (en, pt) => locale === "pt" ? pt : en;
 const navLabels = {
@@ -18,6 +20,9 @@ const navLabels = {
   narration: ["Narration", "Narração"], timeline: ["Timeline", "Linha do tempo"], assets: ["Asset library", "Biblioteca"],
   thumbnails: ["Thumbnails", "Miniaturas"],
   delivery: ["Delivery review", "Revisão da entrega"],
+  analysis: ["Experiments and performance", "Testes e desempenho"],
+  channel: ["YouTube channel", "Canal do YouTube"],
+  youtube: ["YouTube publishing", "Publicação no YouTube"],
   proposals: ["Edit proposals", "Propostas de edição"],
   costs: ["Cost analytics", "Custos"], providers: ["Providers", "Provedores"], settings: ["Settings", "Configurações"],
 };
@@ -38,7 +43,7 @@ const productionStages = {
 const projectNavigation = [
   ["Story", "Pauta e roteiro", ["research", "scripts"]],
   ["Scenes and voice", "Cenas e narração", ["storyboard", "scenes", "narration"]],
-  ["Assets and publishing", "Acervo e publicação", ["delivery", "assets", "thumbnails"]],
+  ["Assets and publishing", "Acervo e publicação", ["delivery", "assets", "thumbnails", "youtube", "analysis"]],
   ["Studio settings", "Operação", ["proposals", "costs", "providers", "settings"]],
 ];
 const states = {
@@ -166,6 +171,8 @@ async function changeProject(id) {
   sessionStorage.setItem("mpt-production-project", id);
   selected = new Set();
   timelineDraft = null;
+  experimentVersion = null;
+  youtubeVersion = null;
   selectedClip = 0;
   page = "dashboard";
   await refresh();
@@ -426,7 +433,7 @@ function createEditorialProject(episode) {
   ]);
 }
 
-function projectsView() {
+function generalProjectForm() {
   const name = input("", {required: true});
   const topic = area("", {required: true});
   const audience = input("", {required: true});
@@ -436,8 +443,7 @@ function projectsView() {
     "Abertura\nContexto\nPrimeiras consequências\nEscalada\nReviravoltas\nConsequências de longo prazo\nConclusão"));
   const langs = select([["en-US,pt-BR", "English → Português"], ["pt-BR,en-US", "Português → English"], ["en-US", "English"], ["pt-BR", "Português"]]);
   const currency = select([["USD", "USD"], ["BRL", "BRL"]], locale === "pt" ? "BRL" : "USD");
-  return stack(title(tr("Projects", "Projetos")),
-    grid(card(node("h2", {}, tr("New project", "Novo projeto")), node("form", {
+  return node("form", {
       onsubmit: event => {
         event.preventDefault();
         execute(async () => {
@@ -452,10 +458,130 @@ function projectsView() {
     label(tr("Target duration (seconds)", "Duração desejada (segundos)"), duration),
     label(tr("Narrative structure · one section per line", "Estrutura narrativa · uma seção por linha"), structure),
     label(tr("Languages · original first", "Idiomas · original primeiro"), langs), label(tr("Currency", "Moeda"), currency),
-    node("button", {class: "primary", type: "submit"}, tr("Create project", "Criar projeto")))),
+    node("button", {class: "primary", type: "submit"}, tr("Create project", "Criar projeto")));
+}
+
+function hyphotenicProjectForm(profile) {
+  const series = select([["", tr("Choose a series", "Escolha a série")],
+    ...Object.entries(profile.series).map(([key, value]) => [key, value.name])]);
+  series.required = true;
+  const publicTitle = input("", {required: true, maxlength: 187});
+  const topic = area("", {required: true, maxlength: 8000});
+  const changed = area("", {rows: 2, maxlength: 8000});
+  const unchanged = area("", {rows: 2, maxlength: 8000});
+  const scope = area("", {rows: 2, maxlength: 8000});
+  const audience = input(profile.base.audience, {required: true, maxlength: 200});
+  const tone = input(profile.base.tone, {required: true, maxlength: 200});
+  const duration = input("", {type: "number", min: 2, max: 7200, required: true});
+  const structure = area("", {required: true, rows: 8});
+  const languages = select([["en-US,pt-BR", "English → Português"], ["en-US", "English"]],
+    profile.base.languages.join(","));
+  const aspect = select([["16:9", "16:9"], ["9:16", "9:16"]], profile.base.style.aspect);
+  const direction = area(profile.base.style.art_direction, {rows: 3, maxlength: 500});
+  const palette = area(profile.base.style.palette, {rows: 3, maxlength: 500});
+  const restrictions = area(profile.base.style.restrictions, {rows: 3, maxlength: 1000});
+  const edited = new Set();
+  for (const field of [duration, structure, aspect]) {
+    field.addEventListener("input", () => edited.add(field));
+  }
+  series.addEventListener("change", () => {
+    const selected = profile.series[series.value];
+    if (!edited.has(duration)) duration.value = selected?.duration ?? "";
+    if (!edited.has(structure)) structure.value = selected?.structure.join("\n") ?? "";
+    if (!edited.has(aspect)) aspect.value = selected?.style?.aspect || profile.base.style.aspect;
+  });
+
+  const sourceFields = stack();
+  const sources = new Map();
+  const addSource = button(tr("Add a source", "Adicionar uma fonte"), () => {
+    if (sources.size === 30) return;
+    const name = input("", {required: true, maxlength: 200});
+    const url = input("", {required: true, type: "url", maxlength: 2000});
+    const excerpt = area("", {required: true, rows: 2, maxlength: 8000});
+    const remove = button(tr("Remove source", "Remover fonte"), () => {
+      sources.delete(group);
+      group.remove();
+    });
+    const group = stack(label(tr("Source title", "Título da fonte"), name),
+      label(tr("Reference URL", "URL da fonte"), url),
+      label(tr("Excerpt, date and scope", "Trecho, data e escopo"), excerpt), remove);
+    sources.set(group, {name, url, excerpt});
+    sourceFields.append(group);
+    name.focus();
+  });
+  return node("form", {onsubmit: event => {
+    event.preventDefault();
+    execute(async () => {
+      const {id} = await api("/api/projects", "POST", {
+        channel: "hyphotenic", series: series.value, public_title: publicTitle.value, topic: topic.value,
+        changed_condition: changed.value.trim() || null, unchanged_conditions: unchanged.value.trim() || null,
+        scope: scope.value.trim() || null,
+        sources: Array.from(sources.values(), ({name, url, excerpt}) =>
+          ({title: name.value, url: url.value, excerpt: excerpt.value})),
+        audience: audience.value, tone: tone.value, duration: duration.valueAsNumber,
+        structure: structure.value.split("\n").map(line => line.trim()).filter(Boolean),
+        languages: languages.value.split(","),
+        style: {aspect: aspect.value, art_direction: direction.value, palette: palette.value, restrictions: restrictions.value},
+      });
+      await changeProject(id);
+    }, event.submitter);
+  }},
+  label(tr("Series or format", "Série ou formato"), series),
+  label(tr("Public episode title", "Título público do episódio"), publicTitle),
+  small(tr("Internal title", "Título interno") + " · " + profile.title_prefix.trimEnd() + " […]"),
+  label(tr("Central question", "Pergunta central"), topic),
+  label(tr("Changed condition", "Condição alterada"), changed),
+  label(tr("Conditions that stay the same", "Condições que permanecem"), unchanged),
+  label(tr("Scope", "Escopo"), scope),
+  node("details", {}, node("summary", {}, tr("Available sources", "Fontes disponíveis")), stack(sourceFields, addSource)),
+  label(tr("Target duration (seconds)", "Duração desejada (segundos)"), duration),
+  label(tr("Narrative structure · one section per line", "Estrutura narrativa · uma seção por linha"), structure),
+  node("details", {}, node("summary", {}, tr("Audience, language and visuals", "Público, idioma e direção visual")),
+    stack(label(tr("Target audience", "Público-alvo"), audience), label(tr("Tone", "Tom"), tone),
+      label(tr("Languages · original first", "Idiomas · original primeiro"), languages),
+      label(tr("Aspect ratio", "Proporção"), aspect), label(tr("Visual direction", "Direção visual"), direction),
+      label(tr("Palette", "Paleta"), palette), label(tr("Visual restrictions", "Restrições visuais"), restrictions),
+      small(tr("Planning currency", "Moeda de planejamento") + " · " + profile.base.currency))),
+  node("button", {class: "primary", type: "submit"}, tr("Create draft project", "Criar projeto em rascunho")));
+}
+
+async function projectsView() {
+  const profile = await api("/api/project-profiles/hyphotenic");
+  const channel = select([["", tr("General project", "Projeto geral")], ["hyphotenic", profile.channel]],
+    project?.data.profile?.channel === profile.channel ? "hyphotenic" : "");
+  const general = generalProjectForm(), branded = hyphotenicProjectForm(profile);
+  const form = stack();
+  const showForm = () => form.replaceChildren(channel.value === "hyphotenic" ? branded : general);
+  channel.addEventListener("change", showForm);
+  showForm();
+  return stack(title(tr("Projects", "Projetos")),
+    grid(card(node("h2", {}, tr("New project", "Novo projeto")),
+      label(tr("Project template", "Modelo de projeto"), channel), form),
     stack(...projects.map(item => card(row(node("h2", {}, item.data.title), badge(item.stage)),
       node("p", {}, item.data.topic), small(item.data.languages.join(" · ")),
       button(tr("Open project", "Abrir projeto"), () => changeProject(item.id)))))));
+}
+
+function profileOverview(data) {
+  const profile = data.profile;
+  const brief = profile.brief;
+  const list = (items, ordered = false) =>
+    node(ordered ? "ol" : "ul", {}, items.map(item => node("li", {}, item)));
+  const group = (heading, items, ordered) =>
+    node("details", {}, node("summary", {}, heading), list(items, ordered));
+  return card(node("h2", {}, profile.channel + " · " + profile.series_name),
+    small(profile.signature + " " + profile.territory),
+    node("dl", {}, [
+      [tr("Public title", "Título público"), profile.public_title],
+      [tr("Changed condition", "Condição alterada"), brief.changed_condition],
+      [tr("Conditions that stay the same", "Condições que permanecem"), brief.unchanged_conditions],
+      [tr("Scope", "Escopo"), brief.scope],
+    ].filter(([, value]) => value).flatMap(([key, value]) => [node("dt", {}, key), node("dd", {}, value)])),
+    group(tr("Deliverables", "Entregas"), profile.deliverables),
+    group(tr("Approval sequence", "Sequência de aprovações"), profile.approvals, true),
+    group(tr("Manual review and publishing", "Revisão e publicação manuais"), profile.manual_controls),
+    node("a", {href: "/api/project-profiles/hyphotenic/logo", download: "HYPHOTENIC-Y.png"},
+      tr("Download approved Y logo", "Baixar o logo Y aprovado")));
 }
 
 function roughCutAction({inEditor = false} = {}) {
@@ -507,6 +633,7 @@ function dashboard() {
     project.data.languages.some(language => !ready(current("voice/" + scene + "/" + language))));
   return stack(title(d.title, badge(project.stage)),
     node("p", {}, d.topic), small([d.audience, d.languages.join(", "), d.duration + " s"].join(" · ")),
+    d.profile && profileOverview(d),
     rough || row(button(needsVoice ? tr("Prepare narration", "Preparar narração") : tr(en, pt),
       () => navigate(needsVoice ? "narration" : next), true)),
     d.editorial && card(node("h2", {}, d.editorial.id + " · " + d.editorial.series),
@@ -529,7 +656,9 @@ function researchView() {
   const name = input();
   const url = input("", {type: "url"});
   const excerpt = area();
-  return stack(title(tr("Research", "Pesquisa"), assetBadge(item)), grid(
+  const checklist = project.data.profile?.research_checklist;
+  return stack(title(tr("Research", "Pesquisa"), assetBadge(item)),
+    checklist && node("ul", {}, checklist.map(entry => node("li", {}, entry))), grid(
     card(node("h2", {}, tr("Source material", "Material de referência")),
       label(tr("Source title", "Título da fonte"), name), label(tr("Reference URL", "URL da fonte"), url),
       label(tr("Verified excerpt or notes", "Trecho verificado ou anotações"), excerpt),
@@ -664,7 +793,11 @@ function scriptsView() {
     }));
   }
   fields();
+  const permanent = project.data.profile?.script_instructions;
   return stack(title(tr("Scripts", "Roteiros"), assetBadge(item)),
+    permanent && node("details", {}, node("summary", {},
+      tr("Permanent script instructions", "Instruções permanentes de roteiro")),
+      permanent.split("\n\n").map(text => node("p", {}, text))),
     roughCutAction(),
     card(small(tr("Pay off the opening question. Give each still a continuous shot and use motion to reveal a useful detail.",
       "Responda à pergunta da abertura. Dê a cada imagem um plano contínuo e use movimento para revelar um detalhe relevante.")),
@@ -1516,6 +1649,351 @@ async function deliveryView() {
   return stack(heading, preview, delivery, feedback?.panel, checklist, assembly && revisions("assembly"), jobHistory());
 }
 
+async function youtubeChannelView() {
+  const {configured, connection, can_setup, setup_error} = await api("/api/youtube");
+  const headings = {
+    connected: tr("Channel verified and connected.", "Canal verificado e conectado."),
+    mismatch: tr("The chosen channel differs from the configured channel.", "O canal escolhido difere do canal configurado."),
+    expired: tr("Open the connection flow again.", "Abra a conexão novamente."),
+    cancelled: tr("Google authorization was cancelled.", "A autorização no Google foi cancelada."),
+    error: tr("Google authorization failed. Check the OAuth settings.", "A autorização falhou. Confira a configuração OAuth."),
+  };
+  const connect = mode => async () => {
+    const result = await api("/api/youtube/connect", "POST", {mode});
+    location.assign(result.url);
+  };
+  const configure = () => {
+    const client = input("", {autocomplete: "off"});
+    const secret = input("", {type: "password", autocomplete: "new-password"});
+    const channel = input("", {maxlength: 24, autocomplete: "off"});
+    const credentials = input("", {type: "file", accept: ".json,application/json"});
+    youtubeConsent(tr("Configure YouTube OAuth", "Configurar OAuth do YouTube"),
+      stack(small(location.origin + "/api/youtube/callback"),
+        label(tr("Google credentials JSON (optional)", "JSON de credenciais do Google (opcional)"), credentials),
+        label(tr("Google OAuth client ID", "Client ID OAuth do Google"), client),
+        label(tr("Client secret", "Client secret"), secret),
+        label(tr("Expected channel ID (optional)", "ID do canal esperado (opcional)"), channel)),
+      tr("Save these credentials in this workspace.", "Salvar estas credenciais neste workspace."),
+      async () => {
+        let values = {client_id: client.value.trim(), client_secret: secret.value.trim()};
+        if (credentials.files.length) {
+          try {
+            const file = credentials.files[0];
+            if (file.size > 16384) throw new Error();
+            const {web} = JSON.parse(await file.text());
+            const callback = location.origin + "/api/youtube/callback";
+            if (!web.redirect_uris?.includes(callback) || !web.client_id || !web.client_secret) throw new Error();
+            values = {client_id: web.client_id, client_secret: web.client_secret};
+          } catch {
+            throw new Error(tr("Choose the Google web client JSON for this callback.",
+              "Selecione o JSON do cliente web do Google para este endereço de retorno."));
+          }
+        }
+        await api("/api/youtube/setup", "POST", {...values, channel: channel.value.trim() || null, confirmed: true});
+      });
+  };
+  return stack(title(tr(...navLabels.channel)),
+    headings[entry.get("youtube")] && (entry.get("youtube") !== "connected" || connection) &&
+      node("p", {role: "status"}, headings[entry.get("youtube")]),
+    card(connection ? stack(node("h2", {}, connection.title), small(connection.channel),
+      small(connection.writable ? tr("Analytics and publishing access", "Leitura e publicação") :
+        tr("Read access", "Somente leitura"))) :
+      node("p", {}, setup_error ? tr("The stored OAuth configuration could not be opened.",
+        "A configuração OAuth salva não pôde ser aberta.") : configured ? tr("Connect the Google account that manages your channel.",
+        "Conecte a conta Google que administra o canal.") :
+        tr("YouTube OAuth is awaiting server configuration.", "A configuração OAuth do YouTube está pendente no servidor.")),
+    can_setup && !connection && button(tr("Configure OAuth client", "Configurar cliente OAuth"), configure, !configured),
+    configured && row(!connection && button(tr("Connect for analytics", "Conectar para leitura"), connect("read")),
+      !connection?.writable && button(tr("Connect for publishing", "Conectar para publicar"), connect("publish"), true),
+      connection && button(tr("Enable impressions and CTR", "Ativar impressões e CTR"), () =>
+        youtubeConsent(tr("Enable YouTube reach reports", "Ativar relatórios de alcance"),
+          node("p", {}, tr("YouTube makes a daily report for the connected channel.",
+            "O YouTube prepara um relatório diário para o canal conectado.")),
+          tr("Enable the report for this channel.", "Ativar o relatório para este canal."),
+          async () => { await api("/api/youtube/reach", "POST", {confirmed: true}); notify(tr("Reach reporting enabled", "Relatórios de alcance ativados")); })),
+      connection && button(tr("Disconnect", "Desconectar"), () => modal(
+        tr("Disconnect YouTube", "Desconectar o YouTube"),
+        node("p", {}, tr("Revoke the connection and remove the imported data from this workspace?",
+          "Revogar a conexão e remover do workspace os dados importados?")),
+        [button(tr("Confirm disconnection", "Confirmar desconexão"), async () => {
+          await api("/api/youtube", "DELETE");
+          ui("dialog").close();
+          render();
+        }, true)]))),
+    node("a", {href: "/youtube-privacy", target: "_blank", rel: "noopener"},
+      tr("YouTube integration privacy", "Privacidade da integração com o YouTube"))));
+}
+
+function youtubeConsent(heading, content, labelText, submit) {
+  const consent = input("", {type: "checkbox"});
+  modal(heading, stack(content, label(labelText, consent)), [
+    button(tr("Confirm", "Confirmar"), async () => {
+      if (!consent.checked) throw new Error(tr("Confirm this YouTube action", "Confirme esta ação no YouTube"));
+      await submit();
+      ui("dialog").close();
+      render();
+    }, true),
+  ]);
+}
+
+async function youtubeView() {
+  const heading = title(tr(...navLabels.youtube));
+  const exports = project.versions.filter(item => item.kind === "export" && item.media);
+  if (!exports.length) return stack(heading, node("p", {}, tr(
+    "Export an approved cut to use this panel.", "Exporte um corte aprovado para usar este painel.")));
+  const selected = exports.find(item => item.id === youtubeVersion) || exports[0];
+  const chooser = select(exports.map(item => [item.id, tr("Export", "Exportação") + " v" + item.seq +
+    " · " + item.data.seconds + " s"]), selected.id);
+  chooser.addEventListener("change", () => { youtubeVersion = chooser.value; render(); });
+  const target = path("/youtube/" + selected.id);
+  const {connection, publication, metrics} = await api(target);
+  const selection = label(tr("Exact export", "Exportação exata"), chooser);
+  if (!connection) return stack(heading, selection, button(tr("Connect YouTube channel", "Conectar canal do YouTube"),
+    () => navigate("channel"), true));
+  const channel = small(connection.title + " · " + connection.channel);
+  const action = (endpoint, data) => api(target + "/" + endpoint, "POST", data);
+  const update = endpoint => async () => { await action(endpoint); render(); };
+  const isCurrent = selected.current && selected.fresh;
+  const link = () => {
+    const id = input("", {maxlength: 11, placeholder: "YouTube ID"});
+    youtubeConsent(tr("Link an existing video", "Vincular vídeo existente"), label(tr("YouTube video ID", "ID do vídeo"), id),
+      tr("This video belongs to the selected export.", "Este vídeo corresponde à exportação selecionada."),
+      () => action("link", {video: id.value.trim(), confirmed: true}));
+  };
+  const upload = () => {
+    const language = selected.data.languages[0];
+    const meta = selected.data.metadata?.[language] || {};
+    const name = input(meta.title || project.data.profile?.public_title || project.data.title, {maxlength: 100});
+    const description = area(meta.description || "", {maxlength: 5000, rows: 5});
+    const category = input("27", {inputmode: "numeric", maxlength: 3});
+    const choice = [["", tr("Choose", "Selecione")], ["yes", tr("Yes", "Sim")], ["no", tr("No", "Não")]];
+    const kids = select(choice), synthetic = select(choice);
+    youtubeConsent(tr("Upload as private", "Enviar como privado"),
+      stack(channel, label(tr("Title", "Título"), name), label(tr("Description", "Descrição"), description),
+        label(tr("YouTube category ID", "ID da categoria no YouTube"), category),
+        label(tr("Made for kids?", "Conteúdo feito para crianças?"), kids),
+        label(tr("Contains realistic altered or synthetic content?", "Contém material realista alterado ou sintético?"), synthetic)),
+      tr("Upload this exact export as private.", "Enviar esta versão exata como privada."),
+      async () => {
+        if (!kids.value || !synthetic.value) throw new Error(tr("Choose the audience and disclosure.", "Informe o público e a declaração de conteúdo."));
+        await action("upload", {channel: connection.channel, title: name.value, description: description.value, category: category.value,
+          made_for_kids: kids.value === "yes", synthetic: synthetic.value === "yes", confirmed: true});
+      });
+  };
+  const video = publication?.video;
+  const prepared = publication?.processing === "processed" && ["UPLOADED", "LINKED"].includes(publication.state);
+  const publish = () => {
+    const when = input("", {type: "datetime-local"});
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    youtubeConsent(tr("Approve YouTube publication", "Aprovar publicação no YouTube"), stack(channel,
+      small(tr("Video", "Vídeo") + " · " + video),
+      label(tr("Schedule in " + zone + " (leave empty to publish now)", "Agendar em " + zone + " (vazio para publicar agora)"), when)),
+      tr("I authorize making this video public.", "Autorizo tornar este vídeo público."),
+      () => action("publish", {video, publish_at: when.value ? new Date(when.value).toISOString() : null, confirmed: true}));
+  };
+  const assets = () => {
+    const thumb = select([["", tr("Skip thumbnail", "Sem miniatura")], ...project.versions.filter(
+      item => item.kind === "thumbnail" && ready(item)).map(item => [item.id, item.data.headline || item.slot])]);
+    const captions = Object.keys(selected.data.captions || {}).map(language => [language, input("", {type: "checkbox"})]);
+    youtubeConsent(tr("Send publication assets", "Enviar materiais da publicação"),
+      stack(channel, label(tr("Approved thumbnail", "Miniatura aprovada"), thumb),
+        ...captions.map(([language, field]) => label(tr("Captions", "Legendas") + " · " + language, field))),
+      tr("Send the selected files to this video.", "Enviar os arquivos selecionados para este vídeo."),
+      () => action("assets", {video, thumbnail: thumb.value || null,
+        captions: captions.filter(([, field]) => field.checked).map(([language]) => language), confirmed: true}));
+  };
+  const stateLabels = {
+    QUEUED: ["Queued", "Na fila"], UPLOADING: ["Uploading", "Enviando"], PAUSED: ["Paused", "Pausado"],
+    UPLOADED: ["Video ID recorded", "ID do vídeo registrado"], LINKED: ["Linked", "Vinculado"],
+    DETACHED: ["Disconnected", "Desconectado"], VISIBILITY_PENDING: ["Confirming visibility", "Confirmando visibilidade"],
+    VISIBILITY_UNKNOWN: ["Needs a status check", "Precisa verificar no YouTube"],
+  };
+  const status = publication && stack(small(tr(...stateLabels[publication.state])),
+    publication.last_error && node("p", {role: "status"}, publication.last_error),
+    publication.state === "UPLOADING" && node("progress", {max: publication.bytes, value: publication.received,
+      "aria-label": tr("Upload progress", "Progresso do envio")}),
+    video && node("a", {href: "https://studio.youtube.com/video/" + video + "/edit",
+      target: "_blank", rel: "noopener noreferrer"}, tr("Open in YouTube Studio", "Abrir no YouTube Studio")),
+    video && small([publication.visibility, publication.processing,
+      publication.scheduled && new Date(publication.scheduled).toLocaleString()].filter(Boolean).join(" · ")));
+  const metricsPanel = video && ["public", "unlisted"].includes(publication.visibility) &&
+    youtubeMetricsPanel(metrics, days => update("metrics/" + days)(), days => update("reach/" + days)());
+  return stack(heading, selection, card(channel, status, row(
+    !publication && connection.writable && isCurrent && button(tr("Upload as private", "Enviar como privado"), upload, true),
+    (!publication || ["PAUSED", "DETACHED"].includes(publication.state)) && button(tr("Link existing video", "Vincular vídeo existente"), link),
+    publication?.state === "PAUSED" && connection.writable && isCurrent && button(tr("Resume upload", "Retomar envio"), update("resume")),
+    publication && ["QUEUED", "UPLOADING"].includes(publication.state) &&
+      button(tr("Pause upload", "Pausar envio"), update("cancel")),
+    publication && !video && button(tr("Refresh receipt", "Atualizar recibo"), render),
+    video && button(tr("Check YouTube status", "Consultar estado no YouTube"), update("refresh")),
+    prepared && connection.writable && isCurrent && button(tr("Send thumbnail and captions", "Enviar miniatura e legendas"), assets),
+    prepared && connection.writable && isCurrent && publication.visibility === "private" && !publication.scheduled &&
+      button(tr("Approve and publish", "Aprovar e publicar"), publish, true))), metricsPanel);
+}
+
+function youtubeMetricsPanel(metrics, sync, reach) {
+  const names = {
+    views: ["Views", "Visualizações"], engagedViews: ["Engaged views", "Visualizações engajadas"],
+    estimatedMinutesWatched: ["Watch time (minutes)", "Tempo assistido (minutos)"],
+    averageViewDuration: ["Average duration (s)", "Duração média (s)"],
+    averageViewPercentage: ["Average percentage viewed", "Percentual médio assistido"],
+  };
+  const metricList = totals => node("dl", {}, Object.entries(totals || {}).flatMap(([key, value]) =>
+    names[key] ? [node("dt", {}, tr(...names[key])), node("dd", {}, String(value))] : []));
+  return card(node("h2", {}, tr("Official YouTube data", "Dados oficiais do YouTube")),
+    row(...[2, 7, 28].map(days => button(tr("Import", "Importar") + " D" + days, () => sync(days)))),
+    ...metrics.map(({days, data}) => node("details", {}, node("summary", {}, "D" + days + " · " + data.start +
+      " – " + data.end + (data.complete ? "" : " · " + tr("Partial", "Parcial"))),
+      small("YouTube Analytics · America/Los_Angeles"), metricList(data.totals),
+      button(tr("Import impressions and CTR", "Importar impressões e CTR"), () => reach(days)),
+      data.reach && node("details", {}, node("summary", {}, tr("Reach by date and origin", "Alcance por data e origem") +
+        " · " + data.reach.days_available + " " + tr("days available", "dias disponíveis")),
+        small(tr("Raw YouTube Reporting data · up to 30 rows in this view",
+          "Dados da YouTube Reporting API · até 30 linhas nesta tela")),
+        node("ul", {}, data.reach.rows.slice(0, 30).map(item => node("li", {}, [
+          item.date, item.traffic_source_type, item.traffic_source_detail, item.device_type,
+          item.video_thumbnail_impressions + " " + tr("impressions", "impressões"),
+          "CTR " + item.video_thumbnail_impressions_ctr,].filter(Boolean).join(" · "))))),
+      data.traffic?.length ? node("ul", {}, data.traffic.map(item =>
+        node("li", {}, item.insightTrafficSourceType + " · " + item.views + " " + tr("views", "visualizações")))) : null,
+      data.retention?.length ? node("details", {}, node("summary", {}, tr("Audience retention points", "Pontos de retenção")),
+        node("ul", {}, data.retention.map(point => node("li", {},
+          String(point.elapsedVideoTimeRatio) + " · " + String(point.audienceWatchRatio))))) : null)));
+}
+
+const performanceMetrics = {
+  views: ["Views", "Visualizações"], ctr: ["Impressions CTR", "CTR de impressões"],
+  retention_30: ["Retention at 30 seconds", "Retenção aos 30 segundos"],
+  average_viewed: ["Average percentage viewed", "Percentual médio assistido"],
+  stayed: ["Stayed to watch", "Continuaram assistindo"],
+};
+const trafficSources = {
+  total: ["Total", "Total"], browse: ["Browse", "Recursos de navegação"],
+  suggested: ["Suggested videos", "Vídeos sugeridos"], search: ["Search", "Pesquisa"],
+  shorts_feed: ["Shorts feed", "Feed de Shorts"], external: ["External", "Externo"],
+};
+const localizedOptions = entries => Object.entries(entries).map(([key, labels]) => [key, tr(...labels)]);
+
+async function experimentsView() {
+  const heading = title(tr(...navLabels.analysis));
+  const available = project.versions.filter(item => ["assembly", "export"].includes(item.kind) && item.media);
+  if (!available.length) return stack(heading, card(node("p", {}, tr(
+    "Render a cut to attach a hypothesis to its exact version.",
+    "Renderize um corte para vincular a hipótese à sua versão."))));
+  const cut = available.find(item => item.id === experimentVersion) ||
+    available.find(item => item.kind === "export") || available[0];
+  const chooser = select(available.map(item => [item.id,
+    (item.kind === "export" ? tr("Export", "Exportação") : tr("Cut", "Corte")) + " v" + item.seq + " · " + item.data.seconds + " s"]),
+    cut.id);
+  chooser.addEventListener("change", () => {
+    experimentVersion = chooser.value;
+    render();
+  });
+  const target = path("/experiments/" + cut.id);
+  const record = await api(target);
+  const youtubeLink = cut.kind === "export" && button(
+    tr("Open official YouTube data", "Abrir dados oficiais do YouTube"),
+    () => { youtubeVersion = cut.id; navigate("youtube"); });
+  const plan = record.plan?.data || {};
+  const hypothesis = area(plan.hypothesis || "", {required: true, rows: 3, maxlength: 8000});
+  const variable = input(plan.variable || "", {required: true, maxlength: 200});
+  const control = area(plan.control || "", {required: true, rows: 2, maxlength: 8000});
+  const isShort = record.format.short;
+  const metrics = localizedOptions(performanceMetrics).filter(([key]) =>
+    (key !== "stayed" || isShort) && (key !== "retention_30" || (!isShort && record.format.seconds >= 30)));
+  const metric = select(metrics, plan.primary_metric || (isShort ? "stayed" : "views"));
+  const saveForm = (fields, text, save) => node("form", {onsubmit: event => {
+    event.preventDefault();
+    execute(save, event.submitter);
+  }}, ...fields, node("button", {type: "submit", class: "primary"}, text));
+  const hypothesisCard = card(node("h2", {}, tr("Hypothesis", "Hipótese")),
+    record.observations.length ? stack(node("p", {}, plan.hypothesis),
+      small(tr("Variable", "Variável") + " · " + plan.variable),
+      small(tr("Control", "Controle") + " · " + plan.control),
+      small(tr("Primary metric", "Métrica principal") + " · " + tr(...performanceMetrics[plan.primary_metric]))) :
+      saveForm([label(tr("What do you predict?", "O que você espera que aconteça?"), hypothesis),
+        label(tr("What changes?", "O que muda?"), variable),
+        label(tr("What stays fixed?", "O que fica fixo?"), control),
+        label(tr("Primary metric", "Métrica principal"), metric)],
+      tr("Save hypothesis", "Salvar hipótese"), () => mutate(target, "PUT", {
+        hypothesis: hypothesis.value, variable: variable.value, control: control.value, primary_metric: metric.value,
+      })));
+
+  const example = record.observations[0]?.data;
+  const youtube = input(example?.youtube_id || "", {required: true, pattern: "[A-Za-z0-9_-]{11}", maxlength: 11, readonly: Boolean(example)});
+  const days = select(["2", "7", "28"].map(value => [value, "D" + value]), "7");
+  const traffic = select(localizedOptions(trafficSources), "total");
+  const views = input("", {type: "number", min: 0, step: 1, required: true});
+  const note = area("", {rows: 2, maxlength: 8000});
+  const optional = metrics.filter(([key]) => key !== "views").map(([key, name]) =>
+    [key, name, input("", {type: "number", min: 0, max: key === "average_viewed" ? 10000 : 100, step: "any"})]);
+  const impressions = input("", {type: "number", min: 0, step: 1});
+  const numeric = field => field.value === "" ? null : field.valueAsNumber;
+  const observationsForm = record.plan && cut.kind === "export" && card(node("h2", {}, tr("Record Studio data", "Registrar dados do Studio")),
+    small(tr("Use the first days after publication and only figures from the selected traffic source.",
+      "Use os primeiros dias após a publicação e somente números do recorte de tráfego escolhido.")),
+    saveForm([label(tr("YouTube video ID", "ID do vídeo no YouTube"), youtube),
+      row(label(tr("Window since publication", "Janela desde a publicação"), days),
+        label(tr("Traffic", "Origem do tráfego"), traffic)),
+      row(label(tr("Views", "Visualizações"), views), label(tr("Impressions", "Impressões"), impressions)),
+      row(...optional.map(([, name, field]) => label(name + " (%)", field))),
+      label(tr("Observation", "Observação"), note)], tr("Save observation", "Salvar observação"),
+    () => mutate(target + "/observations", "POST", {
+      youtube_id: youtube.value, days: Number(days.value), traffic: traffic.value, views: views.valueAsNumber,
+      impressions: numeric(impressions), note: note.value.trim() || null,
+      ...Object.fromEntries(optional.map(([key, , field]) => [key, numeric(field)])),
+    })));
+
+  const number = new Intl.NumberFormat(locale === "pt" ? "pt-BR" : "en-US", {maximumFractionDigits: 2});
+  const value = (amount, suffix) => amount === null ? tr("Unavailable", "Indisponível") : number.format(amount) + suffix;
+  const results = record.observations.map(item => {
+    const data = item.data, comparison = record.comparisons[item.id];
+    const units = comparison.metric === "views" ? "" : "%";
+    return card(node("h3", {}, "D" + data.days + " · " + tr(...trafficSources[data.traffic])),
+      node("p", {}, tr(...performanceMetrics[comparison.metric]) + " · " + value(comparison.value, units)),
+      small(number.format(data.views) + " " + tr("views", "visualizações") +
+        (data.impressions === null ? "" : " · " + number.format(data.impressions) + " " + tr("impressions", "impressões"))),
+      ...metrics.filter(([key]) => key !== "views" && key !== comparison.metric && data[key] !== null)
+        .map(([key, name]) => small(name + " · " + value(data[key], "%"))),
+      comparison.peers.length ? node("details", {}, node("summary", {},
+        tr("Comparable median", "Mediana comparável") + " " + value(comparison.median, units) + " · n=" + comparison.peers.length),
+        comparison.delta !== null && node("p", {}, tr("Difference", "Diferença") + " " +
+          value(comparison.delta, units ? " p.p." : "")),
+        node("ul", {}, comparison.peers.map(peer => node("li", {}, peer.title + " · " +
+          value(peer.value, units) + " · " + peer.experiment.variable)))) :
+        small(tr("No comparable observations yet.", "Ainda faltam observações comparáveis.")),
+      data.note && node("p", {}, data.note));
+  });
+
+  const observation = select([["", tr("Cut and hypothesis only", "Apenas corte e hipótese")],
+    ...record.observations.map(item => [item.id, "D" + item.data.days + " · " + tr(...trafficSources[item.data.traffic])])],
+    record.observations[0]?.id || "");
+  const reports = project.versions.filter(item => item.slot === "analysis/" + cut.id);
+  const work = project.jobs.some(job => job.slot === "analysis/" + cut.id && ["DRAFT", "GENERATING"].includes(job.status));
+  const reportLabels = {
+    content_findings: ["Content findings", "Análise do conteúdo"], hypothesis_readout: ["Hypothesis readout", "Leitura da hipótese"],
+    limitations: ["Limitations", "Limitações"], next_test: ["Next test", "Próximo teste"],
+  };
+  const analysis = record.plan && card(node("h2", {}, tr("Codex analysis", "Análise com Codex")),
+    small(tr("Uses narration, storyboard, scene timing and the selected figures.",
+      "Usa a narração, o storyboard, os tempos de cena e os dados selecionados.")),
+    label(tr("Data for analysis", "Dados para análise"), observation),
+    button(tr("Review analysis quote", "Revisar cotação da análise"), () => quote([{
+      operation: "analysis", provider: "codex", version: cut.id, observation: observation.value || null,
+    }]), true, work),
+    ...reports.map(report => node("details", {open: report.current},
+      node("summary", {}, tr("Analysis", "Análise") + " v" + report.seq + " · " +
+        (report.fresh ? new Date(report.created * 1000).toLocaleString() : tr("Earlier inputs", "Dados anteriores"))),
+      ...Object.entries(reportLabels).flatMap(([key, name]) =>
+        [node("h3", {}, tr(...name)), node("p", {}, report.data[key])]))));
+  return stack(heading, row(label(tr("Exact cut or export", "Corte ou exportação analisada"), chooser), youtubeLink),
+    grid(hypothesisCard, observationsForm), analysis,
+    results.length > 0 && card(node("h2", {}, tr("Observed performance", "Desempenho observado")),
+      small(tr("Comparisons use similar duration, same series, format, language, window and traffic.",
+        "A comparação usa duração próxima, mesma série, formato, idioma, janela e tráfego.")), grid(...results)),
+    jobHistory());
+}
+
 function jobHistory() {
   const active = project.jobs.filter(job => ["DRAFT", "GENERATING"].includes(job.status));
   return node("details", {open: Boolean(active.length)}, node("summary", {},
@@ -1568,7 +2046,8 @@ const thumbnailConcepts = {
 function thumbnailsView() {
   const vertical = project.data.style.aspect === "9:16";
   const language = project.data.languages[0];
-  const videoTitle = current("timeline")?.data.metadata?.[language]?.title || project.data.title;
+  const videoTitle = current("timeline")?.data.metadata?.[language]?.title ||
+    project.data.profile?.public_title || project.data.title;
   const references = project.versions.filter(v => v.current && ready(v) && ["reference", "image"].includes(v.kind));
   const imageOptions = [["", tr("Built-in graphic", "Arte gráfica local")], ...references.map(v => [
     v.id, v.data.title || sceneData(v.slot.split("/")[1])?.data.title || v.slot,
@@ -1742,7 +2221,8 @@ async function providersView() {
       };
       return card(node("h2", {}, tr("Codex · ChatGPT plan", "Codex · assinatura ChatGPT")),
         node("span", {class: p.credential_present ? "status completed" : "status draft"}, tr(...labels[p.status])),
-        small(tr("Research, scripts and translations use your signed-in Codex account.", "Pesquisa, roteiros e traduções usam a sua conta conectada no Codex.")),
+        small(tr("Research, scripts, translations and editorial analysis use your signed-in Codex account.",
+          "Pesquisa, roteiros, traduções e análise editorial usam a sua conta conectada no Codex.")),
         p.status === "login_required" && (p.device_login
           ? button(tr("Connect ChatGPT account", "Conectar conta do ChatGPT"), connectCodex, true)
           : node("p", {}, tr("Sign in on the host with ", "Conecte-se no servidor com "), node("code", {}, "codex login"))));
@@ -1989,7 +2469,7 @@ function render() {
     ui("workspace").replaceChildren(loginView());
     return;
   }
-  const globalPages = ["projects", "catalog", "providers"];
+  const globalPages = ["projects", "catalog", "channel", "providers"];
   const pages = project ? Object.keys(navLabels) : globalPages;
   if (!pages.includes(page)) page = "projects";
   const viewLabel = page === "timeline" ? tr("Edit and review", "Editar e revisar") : tr(...navLabels[page]);
@@ -2019,7 +2499,7 @@ function render() {
     ...projectNavigation.slice(0, 2).map(group),
     nav("timeline", ["Edit and review", "Editar e revisar"]),
     ...projectNavigation.slice(2).map(group),
-    ...globalPages.slice(0, 2).map(name => nav(name)),
+    ...globalPages.slice(0, 3).map(name => nav(name)),
   ] : globalPages.map(name => nav(name));
   // A select keeps the complete navigation reachable on narrow screens without
   // moving the project or the player out of the first screen.
@@ -2030,7 +2510,8 @@ function render() {
   ui("navigation").setAttribute("aria-label", tr("Studio", "Estúdio"));
   ui("navigation").replaceChildren(node("div", {class: "nav-desktop"}, menu),
     node("div", {class: "nav-mobile"}, mobile));
-  const asyncViews = {providers: providersView, catalog: catalogView, proposals: proposalsView, delivery: deliveryView};
+  const asyncViews = {projects: projectsView, providers: providersView, catalog: catalogView, proposals: proposalsView,
+    delivery: deliveryView, analysis: experimentsView, channel: youtubeChannelView, youtube: youtubeView};
   if (page in asyncViews) {
     const loadingPage = page;
     const loadingProject = projectId;
@@ -2041,7 +2522,7 @@ function render() {
     });
     return;
   }
-  const views = {dashboard, projects: projectsView, research: researchView, scripts: scriptsView, storyboard: storyboardView,
+  const views = {dashboard, research: researchView, scripts: scriptsView, storyboard: storyboardView,
     scenes: scenesView, narration: narrationView, timeline: timelineView, thumbnails: thumbnailsView, assets: assetView, costs: costsView, settings: settingsView};
   ui("workspace").replaceChildren(views[page]());
 }

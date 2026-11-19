@@ -6,7 +6,7 @@ import re
 import time
 from uuid import uuid4
 
-from . import codex_cli, credentials, rough_cut, scene_motion
+from . import codex_cli, credentials, experiments, rough_cut, scene_motion
 from .models import GRAPHIC_MODES, HYPERFRAMES_MODES, Scene, Timeline, check_cue_window
 from .store import ACTIVE, SCENE_OPERATIONS, RuleError, Store, encode, unpack
 
@@ -337,9 +337,11 @@ class Workbench(Store):
             kind, "openai" if kind == "translation" else "local"
         )
         provider = request.provider or default_provider
+        if kind == "analysis" and provider != "codex":
+            raise RuleError("Editorial analysis uses the connected Codex subscription", 422)
         if provider == "codex" and kind not in codex_cli.OPERATIONS:
             raise RuleError(
-                "The Codex subscription provider supports research, scripts and translations"
+                "The Codex subscription provider supports research, scripts, translations and analysis"
             )
         if kind == "translation" and provider == "local":
             raise RuleError(
@@ -351,14 +353,17 @@ class Workbench(Store):
             raise RuleError("An animation is only used for video", 422)
         if request.sources and kind != "research":
             raise RuleError("Sources are only accepted for research", 422)
+        if request.observation and kind != "analysis":
+            raise RuleError("An observation is only used for editorial analysis", 422)
         if request.version and kind not in {
             "script",
             "rough_cut",
             "assembly",
             "export",
+            "analysis",
         }:
             raise RuleError(
-                "A version override is used for script revision, rough cut, assembly or export",
+                "Choose a version for script revision, rough cut, assembly, export or analysis",
                 422,
             )
         if sid:
@@ -499,6 +504,15 @@ class Workbench(Store):
             deps.append({"id": assembly["id"]})
             payload["assembly"] = assembly["media"]
             payload["metadata"] = assembly["data"]
+        if kind == "analysis":
+            if not request.version:
+                raise RuleError("Choose the exact rendered cut to analyze", 422)
+            slot = f"analysis/{request.version}"
+            evidence, analysis_inputs = experiments.analysis_context(
+                self, db, project, request.version, request.observation
+            )
+            payload = {"experiment": evidence}
+            deps.extend(analysis_inputs)
         setup = self._settings(db, project, provider, kind)
         if request.animation:
             setup["model"] = request.animation.mode
@@ -520,6 +534,19 @@ class Workbench(Store):
             setup["estimate"] = (setup["ceiling"] * characters + 999) // 1000
         if setup["estimate"] > 1_000_000_000:
             raise RuleError("Estimated charge exceeds the supported ceiling")
+        approval_inputs = {}
+        if setup["estimate"] and context.get("profile", {}).get("channel") == "HYPHOTENIC":
+            storyboard = self.order(db, pid)
+            if not storyboard:
+                raise RuleError("Approve the storyboard before quoting paid generation")
+            approval_inputs["admission"] = [
+                {"id": self.require(db, pid, "script")["id"]},
+                {"order": storyboard},
+                *(
+                    {"id": self.require(db, pid, f"scene/{scene_id}")["id"]}
+                    for scene_id in storyboard
+                ),
+            ]
         current = self.head(db, pid, slot)
         if (
             kind == "video"
@@ -544,6 +571,8 @@ class Workbench(Store):
                 "This scene asset is already approved. Revise its inputs to make a replacement."
             )
         parameters = request.model_dump()
+        if not request.observation:
+            parameters.pop("observation")
         if not request.animation:
             parameters.pop("animation")
         return dict(
@@ -556,6 +585,7 @@ class Workbench(Store):
             request=parameters,
             head=current["id"] if current else None,
             head_status=current["status"] if current else None,
+            **approval_inputs,
         )
 
     def quote(self, actor, pid, requests):
@@ -838,6 +868,9 @@ class Workbench(Store):
                 if not job["remote"] and (
                     job["cancel"]
                     or not self._current(db, job)
+                    or not self._dependencies_current(
+                        db, job["project"], job["spec"].get("admission", [])
+                    )
                     or not self._provider_enabled(db, job)
                 ):
                     self._finish(
@@ -1068,6 +1101,14 @@ class Workbench(Store):
                 )
                 return False
             deps = job["spec"]["deps"]
+            if kind == "analysis":
+                evidence = job["spec"]["payload"]["experiment"]
+                data = dict(data, evidence={
+                    key: evidence[key] for key in (
+                        "content_version", "hypothesis_version",
+                        "observation_version", "comparison",
+                    )
+                })
             if kind == "script":
                 item = self.script(
                     db, pid, data, self.asset(db, pid, deps[0]["id"]), job["id"]

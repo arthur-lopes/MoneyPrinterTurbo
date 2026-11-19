@@ -9,6 +9,7 @@ import uvicorn
 from app.paths import runtime_root
 
 from .api import PublicLogin, create_app
+from .youtube import Settings as YouTubeSettings
 
 
 def main(argv=None):
@@ -37,8 +38,17 @@ def main(argv=None):
             public_login = PublicLogin(origin, username, actor, password_hash)
         except ValueError as error:
             parser.error(str(error))
+    try:
+        youtube_settings = YouTubeSettings.from_env()
+    except ValueError as error:
+        parser.error(str(error))
     uvicorn.run(
-        create_app(args.data_dir, {token: actor}, public_login=public_login),
+        create_app(
+            args.data_dir,
+            {token: actor},
+            public_login=public_login,
+            youtube_settings=youtube_settings,
+        ),
         host="127.0.0.1",
         port=args.port,
         proxy_headers=public_login is not None,

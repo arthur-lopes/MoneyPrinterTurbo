@@ -1,0 +1,108 @@
+{
+  "revision": 1,
+  "channel": "HYPHOTENIC",
+  "signature": "ONE CHANGE. INFINITE CONSEQUENCES.",
+  "territory": "WHAT IF • SCIENCE • HISTORY • THE FUTURE.",
+  "title_prefix": "Hyphotenic | ",
+  "base": {
+    "audience": "English-speaking adults who enjoy documentaries, science, technology, alternate history and thought experiments.",
+    "tone": "Cinematic, curious, clear and precise. Use natural English that reads well aloud.",
+    "languages": [
+      "en-US",
+      "pt-BR"
+    ],
+    "currency": "BRL",
+    "style": {
+      "art_direction": "Cinematic documentary with legible, source-linked maps, clocks, diagrams and concrete objects. Use the approved HYPHOTENIC Y in branded artwork or the closing where appropriate.",
+      "palette": "Background #0D1723; light text #F5EFE1; cyan #55D7E5 for legible references; amber #FFC16A for the changed or pending condition.",
+      "restrictions": "Use color with text or shape. Label hypothetical scenarios, alternate timelines and realistic reconstructions when relevant. Track asset provenance and rights. Keep important frames and labels on screen long enough to read.",
+      "aspect": "16:9"
+    }
+  },
+  "script_instructions": "You are the editorial and production assistant for HYPHOTENIC. Write original English-language documentaries that change one rule and follow its consequences through science, history, or the future.\n\nOpen on a visible action or contradiction. Make the title and thumbnail promise recognizable in the first scene. Establish what changes and what stays true. Aim to deliver the first substantive answer within the first 30 seconds of a long-form episode. Use that answer to raise the next question.\n\nBuild the middle through cause and effect. Each beat should give the viewer a new mechanism, consequence, exception, or decision. When changing scale or location, carry forward an object, map, clock, or other reference the viewer can recognize. Use examples that let the viewer predict an outcome before revealing it. Give important visuals enough time to be read.\n\nKeep documented facts, scenario assumptions, plausible consequences, and material uncertainty distinguishable in the script and on screen. Provide a source URL and scope for factual claims. Flag claims that still need verification before approval. Label hypothetical scenarios, alternate timelines, and realistic reconstructions clearly where relevant. Treat events, people, images, and quotations according to their actual provenance.\n\nPay off the main question. When it serves the episode, return to the opening object or decision and show how its state changed. End with one question that invites the audience to change a specific variable or explain an exception.\n\nUse curiosity, surprise, prediction, and emotional stakes as editorial choices that can be tested. Check that the opening creates a clear question, the first answer arrives early, and the ending delivers the promise. Use actual audience data to assess retention after publication.",
+  "research_checklist": [
+    "Record each claim, primary source URL and excerpt, date, scope (including geography and limits), and classification: documented fact, scenario assumption, plausible inference or open question.",
+    "Link each factual claim to the source that supports it. Flag open verification, distinguish a measured effect from its proposed cause, and keep the scope explicit before approving."
+  ],
+  "deliverables": [
+    "Brief: central question, first scene, first substantive answer, limits and audience promise.",
+    "Research worksheet: claim, source URL and excerpt, date, scope, classification and open checks.",
+    "Original English voice-over. When activated, adapt for Brazilian Portuguese captions or voice-over and review timing and pronunciation.",
+    "Storyboard or animatic: estimated timing, voice, image, on-screen text, sound, asset origin and rights. Align timestamps and chapters with the final cut.",
+    "Packaging: primary title, alternatives and two thumbnail concepts with distinct hypotheses. Hold the title fixed for the first thumbnail comparison.",
+    "Publication sheet: English description with sources, chapters, a pinned-comment question, and the related long video for a Short when applicable.",
+    "Production record: estimated BRL cost, separately approved ceiling, asset origin and rights, synthetic-scene disclosure as applicable, and approval status.",
+    "Post-publication record: enter real Studio data when available. Record CTR by traffic source, 30-second retention, average view duration, average percentage viewed and comments that clarify how the episode landed. Capture D2, D7 and D28 when available."
+  ],
+  "approvals": [
+    "Brief and research",
+    "Script",
+    "Storyboard or animatic",
+    "BRL cost approval",
+    "Scene and voice generation",
+    "Cut review",
+    "Explicit approval to publish"
+  ],
+  "manual_controls": [
+    "Review the brief and any unresolved claims before approving the research version. Record the brief decision in the research review comment.",
+    "Record source dates and scope in the research notes. Record final asset rights, synthetic scenes, packaging alternatives and publication details in the production sheet.",
+    "After reviewing the cut, record explicit approval for public release against the final cut and packaging versions in the publication sheet before publishing externally. Record Studio metrics in the operation workbook for the episode."
+  ],
+  "series": {
+    "what-if": {
+      "name": "WHAT IF…?",
+      "duration": 840,
+      "structure": [
+        "Abra com uma consequência visível.",
+        "Declare a regra que mudou e o que permanece.",
+        "Responda à primeira pergunta com uma demonstração.",
+        "Mostre o mecanismo que produz o efeito.",
+        "Siga a consequência para outra escala, lugar ou instituição.",
+        "Compare com uma exceção ou uma condição diferente.",
+        "Mostre o resultado acumulado e seus limites.",
+        "Volte ao objeto inicial e convide o público a alterar uma variável."
+      ]
+    },
+    "alternate-history": {
+      "name": "ALTERNATE HISTORY",
+      "duration": 780,
+      "structure": [
+        "Abra com uma decisão histórica reconhecível.",
+        "Apresente a linha do tempo documentada.",
+        "Declare o ponto de divergência.",
+        "Mostre a primeira consequência plausível.",
+        "Explique interesses, restrições e escolhas dos envolvidos.",
+        "Compare duas trajetórias defensáveis quando houver base.",
+        "Mostre o que poderia mudar e onde cresce a incerteza.",
+        "Retome a decisão inicial com a distinção entre registro histórico e cenário alternativo."
+      ]
+    },
+    "first-24-hours": {
+      "name": "THE FIRST 24 HOURS",
+      "duration": 600,
+      "structure": [
+        "Abra com a primeira decisão sob informação incompleta.",
+        "Declare o evento e as capacidades ainda disponíveis.",
+        "Mostre o primeiro efeito em T+0.",
+        "Siga a reação e as primeiras confirmações em T+1h.",
+        "Mostre a coordenação e o que ainda está pendente em T+6h.",
+        "Compare dois lugares, instituições ou pessoas com capacidades diferentes.",
+        "Mostre o estado em T+24h e as perguntas ainda abertas.",
+        "Feche com a consequência da primeira decisão."
+      ]
+    },
+    "shorts": {
+      "name": "Shorts",
+      "duration": 40,
+      "style": {
+        "aspect": "9:16"
+      },
+      "structure": [
+        "Comece com uma imagem legível em tela vertical.",
+        "Declare uma regra ou pergunta pequena.",
+        "Demonstre o mecanismo.",
+        "Entregue a resposta no próprio Short."
+      ]
+    }
+  }
+}

@@ -11,13 +11,13 @@ from pathlib import Path
 import re
 import secrets
 from tempfile import TemporaryDirectory
-from threading import BoundedSemaphore, Lock
+from threading import BoundedSemaphore, Lock, Thread
 import time
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import Field, SecretStr, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -32,13 +32,16 @@ from . import (
     delivery,
     review_notes,
     editorial,
+    experiments,
     media,
+    project_profiles,
     thumbnails,
+    youtube,
     models as m,
 )
 from .codex_login import DeviceLogin
 from .store import RuleError, encode
-from .workbench import Workbench
+from .workbench import Workbench, _deployment_draining
 from .worker import Worker
 
 
@@ -131,6 +134,8 @@ def create_app(
     worker_enabled=True,
     allowed_hosts=("localhost", "127.0.0.1", "[::1]"),
     public_login: PublicLogin | None = None,
+    youtube_settings: youtube.Settings | None = None,
+    youtube_transport=None,
 ):
     if not tokens or any(
         len(token) < 32 or not token.isascii() or not actor
@@ -144,6 +149,10 @@ def create_app(
     deliveries = delivery.Delivery(store)
     notes = review_notes.ReviewNotes(store)
     worker = Worker(store)
+    setup_owner = public_login.actor if public_login else (next(iter(tokens.values())) if len(set(tokens.values())) == 1 else None)
+    setup_key = next((token for token, owner in tokens.items() if owner == setup_owner), None)
+    yt = youtube.YouTube(store, youtube_settings, transport=youtube_transport, setup_key=setup_key)
+    yt.worker = Thread(target=yt.loop, args=(_deployment_draining,), daemon=True, name="mpt-youtube")
     sessions = {}
     sessions_lock = Lock()
     limiter = RateLimit()
@@ -154,17 +163,22 @@ def create_app(
     async def lifespan(_app):
         if worker_enabled:
             worker.thread.start()
+            yt.worker.start()
         try:
             yield
         finally:
             worker.stop.set()
+            yt.stop.set()
             if codex_login:
                 await codex_login.cancel()
             if worker.thread.is_alive():
                 await run_in_threadpool(worker.thread.join, 2)
+            if yt.worker.is_alive():
+                await run_in_threadpool(yt.worker.join, 2)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
+    app.state.youtube = yt
     hosts = list(allowed_hosts)
     if public_login:
         hosts.append(public_login.hostname)
@@ -241,6 +255,14 @@ def create_app(
     async def rejected(request, error):
         return JSONResponse({"detail": str(error)}, status_code=error.status)
 
+    @app.exception_handler(youtube.GoogleError)
+    async def youtube_rejected(request, error):
+        reason = error.reason
+        detail = "YouTube did not complete the request"
+        if re.fullmatch(r"[A-Za-z0-9_]{1,80}", reason):
+            detail += f" ({reason})"
+        return JSONResponse({"detail": detail}, status_code=502)
+
     @app.exception_handler(RequestValidationError)
     @app.exception_handler(ValidationError)
     async def invalid(request, error):
@@ -308,6 +330,10 @@ def create_app(
     def index():
         return FileResponse(WEB / "index.html")
 
+    @app.get("/youtube-privacy", include_in_schema=False)
+    def youtube_privacy():
+        return FileResponse(WEB / "youtube-privacy.html")
+
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon():
         return Response(status_code=204)
@@ -321,7 +347,14 @@ def create_app(
             active = db.execute(
                 "SELECT COUNT(*) FROM jobs WHERE status='GENERATING'"
             ).fetchone()[0]
-        ready = not worker_enabled or worker.thread.is_alive()
+            active += db.execute(
+                """SELECT COUNT(*) FROM youtube_publications WHERE state='UPLOADING'
+                OR (state='VISIBILITY_PENDING' AND EXISTS (SELECT 1 FROM youtube_events e
+                    WHERE e.project=youtube_publications.project AND e.export=youtube_publications.export
+                    AND e.event IN ('public_visibility_authorized','scheduled_visibility_authorized') AND e.created>?))""",
+                (time.time() - 180,),
+            ).fetchone()[0]
+        ready = not worker_enabled or (worker.thread.is_alive() and yt.worker.is_alive())
         return JSONResponse(
             {
                 "status": "ready" if ready else "starting",
@@ -422,13 +455,142 @@ def create_app(
             )
         }
 
+    @app.get("/api/project-profiles/hyphotenic")
+    def hyphotenic_profile(actor=Depends(authenticated)):
+        return project_profiles.hyphotenic()
+
+    @app.get("/api/project-profiles/hyphotenic/logo")
+    def hyphotenic_logo(actor=Depends(authenticated)):
+        return FileResponse(
+            project_profiles.DIRECTORY / "hyphotenic-y.png", media_type="image/png"
+        )
+
     @app.post("/api/projects", status_code=201)
-    def create(body: m.Project, actor=Depends(authenticated)):
+    def create(
+        body: m.Project | project_profiles.HyphotenicProject,
+        actor=Depends(authenticated),
+    ):
+        if isinstance(body, project_profiles.HyphotenicProject):
+            return {"id": project_profiles.create_hyphotenic(store, actor, body)}
         return {"id": store.create(actor, body.model_dump())}
 
     @app.get("/api/projects/{pid}")
     def project(pid: m.Id, actor=Depends(authenticated)):
         return store.snapshot(actor, pid)
+
+    @app.get("/api/youtube")
+    def youtube_status(actor=Depends(authenticated)):
+        return yt.status(actor) | {"can_setup": bool(actor == setup_owner and setup_key and not yt.from_env)}
+
+    @app.post("/api/youtube/setup")
+    def youtube_setup(body: youtube.Setup, request: Request, actor=Depends(authenticated)):
+        if actor != setup_owner or not setup_key or session_actor(request) != actor:
+            raise HTTPException(403, "Use the owner workspace browser session")
+        origin = public_login.origin if is_public(request) else f"http://{request.headers['host']}"
+        yt.configure(body, origin)
+        return youtube_status(actor)
+
+    @app.post("/api/youtube/connect")
+    def youtube_connect(body: youtube.Connect, request: Request, actor=Depends(authenticated)):
+        browser = request.cookies.get(COOKIE)
+        if not browser or session_actor(request) != actor:
+            raise HTTPException(401, "Use an authenticated workspace browser session")
+        origin = public_login.origin if is_public(request) else f"http://{request.headers['host']}"
+        return {"url": yt.begin(actor, browser, body.mode, origin)}
+
+    @app.get(youtube.CALLBACK, include_in_schema=False)
+    def youtube_callback(
+        request: Request,
+        state: str = Query(max_length=100),
+        code: str = Query(default="", max_length=2048),
+        error: str = Query(default="", max_length=150),
+    ):
+        target = "/?view=channel&youtube="
+        try:
+            _, browser, actor, verifier, scopes = yt.consume_state(state)
+            with sessions_lock:
+                session = sessions.get(browser)
+            if (
+                not session or session[0] != actor or session[1] < time.monotonic()
+                or session[2] != is_public(request)
+            ):
+                return RedirectResponse(target + "expired", status_code=303)
+            if error or not code:
+                return RedirectResponse(target + "cancelled", status_code=303)
+            yt.connect(actor, verifier, scopes, code)
+        except RuleError as exc:
+            return RedirectResponse(target + ("mismatch" if exc.status == 409 else "error"), status_code=303)
+        except (httpx.HTTPError, youtube.GoogleError, KeyError, ValueError):
+            return RedirectResponse(target + "error", status_code=303)
+        return RedirectResponse(target + "connected", status_code=303)
+
+    @app.delete("/api/youtube")
+    def youtube_disconnect(actor=Depends(authenticated)):
+        return yt.disconnect(actor)
+
+    @app.post("/api/youtube/reach")
+    def youtube_enable_reach(body: youtube.Consent, actor=Depends(authenticated)):
+        return yt.enable_reach(actor)
+
+    @app.get("/api/projects/{pid}/youtube/{version}")
+    def youtube_publication(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
+        return yt.snapshot(actor, pid, version)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/upload", status_code=202)
+    def youtube_upload(pid: m.Id, version: m.Id, body: youtube.Upload, actor=Depends(authenticated)):
+        return yt.queue(actor, pid, version, body)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/resume", status_code=202)
+    def youtube_resume(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
+        return yt.resume(actor, pid, version)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/cancel")
+    def youtube_cancel(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
+        return yt.cancel(actor, pid, version)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/link")
+    def youtube_link(pid: m.Id, version: m.Id, body: youtube.Link, actor=Depends(authenticated)):
+        return yt.link(actor, pid, version, body)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/refresh")
+    def youtube_refresh(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
+        return yt.refresh(actor, pid, version)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/publish")
+    def youtube_publish(pid: m.Id, version: m.Id, body: youtube.Visibility, actor=Depends(authenticated)):
+        return yt.publish(actor, pid, version, body)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/assets")
+    def youtube_assets(pid: m.Id, version: m.Id, body: youtube.Assets, actor=Depends(authenticated)):
+        return yt.upload_assets(actor, pid, version, body)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/metrics/{days}")
+    def youtube_metrics(pid: m.Id, version: m.Id, days: int, actor=Depends(authenticated)):
+        if days not in (2, 7, 28):
+            raise HTTPException(422, "Use observation day 2, 7 or 28")
+        return yt.sync(actor, pid, version, days)
+
+    @app.post("/api/projects/{pid}/youtube/{version}/reach/{days}")
+    def youtube_reach(pid: m.Id, version: m.Id, days: int, actor=Depends(authenticated)):
+        if days not in (2, 7, 28):
+            raise HTTPException(422, "Use observation day 2, 7 or 28")
+        return yt.sync_reach(actor, pid, version, days)
+
+    @app.get("/api/projects/{pid}/experiments/{version}")
+    def content_experiment(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
+        return experiments.snapshot(store, actor, pid, version)
+
+    @app.put("/api/projects/{pid}/experiments/{version}")
+    def save_content_experiment(
+        pid: m.Id, version: m.Id, body: experiments.Plan, actor=Depends(authenticated)
+    ):
+        return experiments.save_plan(store, actor, pid, version, body)
+
+    @app.post("/api/projects/{pid}/experiments/{version}/observations")
+    def record_content_observation(
+        pid: m.Id, version: m.Id, body: experiments.Observation, actor=Depends(authenticated)
+    ):
+        return experiments.save_observation(store, actor, pid, version, body)
 
     @app.put("/api/projects/{pid}/style")
     def style(pid: m.Id, body: m.Style, actor=Depends(authenticated)):

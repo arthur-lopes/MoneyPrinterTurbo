@@ -33,6 +33,7 @@ Operation = Literal[
     "rough_cut",
     "assembly",
     "export",
+    "analysis",
 ]
 Review = Literal["APPROVED", "REJECTED", "REVISION_REQUESTED"]
 
@@ -388,6 +389,7 @@ class RequestJob(Input):
     scene: Id | None = None
     language: Language | None = None
     version: Id | None = None
+    observation: Id | None = None
     sources: list[Source] = Field(default_factory=list, max_length=30)
     instructions: str = Field(default="", max_length=3000)
     voice: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9 -]{1,80}$")] = "alloy"

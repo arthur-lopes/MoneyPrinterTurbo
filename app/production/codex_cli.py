@@ -11,7 +11,7 @@ from tempfile import TemporaryDirectory
 import time
 
 
-OPERATIONS = frozenset({"research", "script", "translation"})
+OPERATIONS = frozenset({"research", "script", "translation", "analysis"})
 DEFAULT_MODEL = "cli-default"
 _ENV_NAMES = {
     "APPDATA",
@@ -207,6 +207,10 @@ SCHEMAS = {
         }
     ),
     "translation": _object({"title": _TEXT, "description": _TEXT, "narration": _TEXT}),
+    "analysis": _object({
+        "content_findings": _TEXT, "hypothesis_readout": _TEXT,
+        "limitations": _TEXT, "next_test": _TEXT,
+    }),
 }
 
 

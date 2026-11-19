@@ -7,8 +7,25 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | GET /api/session | Reports whether the browser session is authenticated. |
 | POST /api/session | Accepts `token` and sets a short-lived HTTP-only session cookie. |
 | DELETE /api/session | Ends the current browser session. |
-| GET, POST /api/projects | List or create projects. Create takes title, topic, audience, duration, tone, structure, languages, currency and optional style. |
+| GET, POST /api/projects | List or create projects. Create accepts the standard project fields or the HYPHOTENIC profile request. |
+| GET /api/project-profiles/hyphotenic | Read the built-in HYPHOTENIC base, script instructions and series profiles. |
+| GET /api/project-profiles/hyphotenic/logo | Download the approved transparent Y logo. |
 | GET /api/projects/{project} | Project metadata, scene order, versions, reviews, costs and jobs. |
+| GET, PUT /api/projects/{project}/experiments/{version} | Read the hypothesis, observations, comparison and report for an exact rendered assembly or export. PUT saves the hypothesis. |
+| POST /api/projects/{project}/experiments/{version}/observations | Save a versioned observation from YouTube Studio against a final export. |
+| GET /api/youtube | Read the OAuth readiness and connected channel of the authenticated owner. |
+| POST /api/youtube/setup | Save a Web OAuth client from the administrator's authenticated browser. |
+| POST /api/youtube/connect | Begin the browser consent flow with `mode` set to `read` or `publish`. |
+| GET /api/youtube/callback | Complete OAuth using the one-time state and the original operator session. |
+| DELETE /api/youtube | Revoke the connection and remove associated imported metrics and remote video bindings. |
+| POST /api/youtube/reach | Enable the daily YouTube Reach report with `confirmed: true`. |
+| GET /api/projects/{project}/youtube/{export} | Read the exact export's status, receipt, events and imported reports. |
+| POST /api/projects/{project}/youtube/{export}/upload | Authorize a private upload of the approved export. |
+| POST /api/projects/{project}/youtube/{export}/{resume,cancel,refresh} | Resume or pause the upload, or reconcile the remote video status. |
+| POST /api/projects/{project}/youtube/{export}/link | Link an existing video by `video` with confirmation and channel verification. |
+| POST /api/projects/{project}/youtube/{export}/assets | Send an approved thumbnail or caption tracks from the export. |
+| POST /api/projects/{project}/youtube/{export}/publish | Confirm public visibility or a scheduled timestamp for the exact video. |
+| POST /api/projects/{project}/youtube/{export}/{metrics,reach}/{days} | Import Analytics or Reporting data for D2, D7 or D28. |
 | PUT /api/projects/{project}/style | Save a project style guide and stale affected storyboard versions. |
 | PUT /api/projects/{project}/defaults | Set preferred project providers for research, script, translation, images, new video scenes, and narration. |
 | POST /api/projects/{project}/research | Save sources and claims. Sources contain title, URL and excerpt. Claims contain text, category and one-based source indices. |
@@ -39,7 +56,11 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | POST /api/projects/{project}/uploads | Raw bytes. Use query `kind=reference\|image\|audio\|video\|voice` and `title`. Storyboard images, video, and voice use `scene`. Voice also uses `language`. |
 | GET, HEAD /api/projects/{project}/media/{version} | Owner-authenticated media, single byte range, optional `attachment=true`. |
 
-Job operations are `research`, `script`, `image`, `video`, `translation`, `voice`, `rough_cut`, `assembly`, and `export`. Include the scene ID for scene operations and the language for translation and voice. Pass the saved timeline ID as `version` for assembly or pass an inline `timeline`. Export takes the approved assembly ID as `version`. Validation errors return 422. Missing private resources return 404. Conflicting versions, approvals or budgets return 409. Schema definitions are in `app/production/models.py`.
+Job operations are `research`, `script`, `image`, `video`, `translation`, `voice`, `rough_cut`, `assembly`, `export` and `analysis`. Include the scene ID for scene operations and the language for translation and voice. Pass the saved timeline ID as `version` for assembly or pass an inline `timeline`. Export takes the approved assembly ID as `version`. Validation errors return 422. Missing private resources return 404. Conflicting versions, approvals or budgets return 409. Schema definitions are in `app/production/models.py`.
+
+In the workspace, choose **Projects → New project → Project template → HYPHOTENIC** and select a series. The equivalent `POST /api/projects` request uses `channel: "hyphotenic"`, `series` (`what-if`, `alternate-history`, `first-24-hours`, or `shorts`), `public_title`, and `topic`. It accepts the optional `changed_condition`, `unchanged_conditions`, `scope`, and `sources`. Supplied sources become a research draft awaiting review. Optional `duration`, `structure`, `audience`, `tone`, `languages`, and individual `style` fields override inherited values. The project stores the chosen profile revision and plans in BRL.
+
+HYPHOTENIC quotes with direct provider charges require the current script and all active storyboard scenes to be approved. Authorizing the quote requires a separately confirmed BRL project budget and quote maximum. If an approval input changes before submission, the queue cancels the pending job and releases its reservation. Approval for external publication is recorded manually after review of the final cut and packaging.
 
 For the first edit in a project, quote `{"operation":"rough_cut","provider":"local","version":"<approved-script-id>"}` in `jobs` and authorize the quote with a maximum of zero. One durable job creates the storyboard, visual guides, system narration in the original language, captions, a saved timeline and a watermarked 720p assembly. The job publishes the edit and its assets together. An existing storyboard or a newer script supersedes a pending first cut. Rough-cut assets awaiting review can be reused in a watermarked assembly. Final delivery requires approved inputs and an approved unwatermarked assembly.
 
@@ -53,7 +74,21 @@ Review notes stay on their rendered assembly, including when a later cut becomes
 
 For a subtitle-only correction, set the scene's `clips[].captions` entry to a map such as `{"pt-BR": "Texto corrigido."}`. The existing audio and scene timing are reused. Request `?webvtt=true` on a caption media URL to load the same cues in a browser.
 
-Use `provider: "codex"` for research, scripts, and translations. The quote marks the item `billing: "subscription"` and still requires confirmation. The monetary estimate covers direct API spend. ChatGPT manages its own usage allowance, credits, and automatic reload.
+Use `provider: "codex"` for research, scripts, translations and editorial analysis. The quote marks the item `billing: "subscription"` and still requires confirmation. The monetary estimate covers direct API spend. ChatGPT manages its own usage allowance, credits, and automatic reload.
+
+In **Assets and publishing → Experiments and performance**, choose a rendered assembly or final export and save `hypothesis`, `variable`, `control` and `primary_metric`. To record Studio data, choose the published export and supply its `youtube_id`, `days` (2, 7 or 28), `traffic`, `views` and relevant metric fields. The first observation freezes the hypothesis for that export. Corrections to a window and traffic source create new observation revisions.
+
+Quote editorial analysis with `{"operation":"analysis","provider":"codex","version":"<rendered-version-id>"}` and include an `observation` ID to analyze a Studio sample. The analysis receives the versioned storyboard, narration and scene timings. It stores the report, hypothesis and observation IDs, and comparison used. It compares observations from the same owner's series, format, language, window and traffic within 20% of the selected runtime, up to 12 other distinct videos. The median and delta are observational. Studio figures are entered manually.
+
+## YouTube connection for HYPHOTENIC
+
+Use a Web application OAuth client in the `hyphotenic-moneyprinter` Google Cloud project. Enable YouTube Data API v3, YouTube Analytics API and YouTube Reporting API. Register the exact callback `https://hyphotenic.onboardingradar.com/api/youtube/callback`. The workspace privacy disclosure is served at `/youtube-privacy`.
+
+In **Canal do YouTube → Configurar cliente OAuth**, the authenticated operator can enter the Web client ID, secret and an optional expected channel ID. The server stores the credential encrypted under its workspace access token. Alternatively set `MPT_YOUTUBE_CLIENT_ID`, `MPT_YOUTUBE_CLIENT_SECRET`, `MPT_YOUTUBE_REDIRECT_URI` and a Fernet key in `MPT_YOUTUBE_TOKEN_KEY` in the server environment. In that mode use `MPT_YOUTUBE_CHANNEL_ID` to pin the channel. Server settings take precedence over the browser setup.
+
+The operator authorizes the appropriate channel through Google. Read mode uses YouTube read and Analytics scopes. Publishing mode adds the scope needed by the video's upload, visibility, thumbnail and caption endpoints. In **Acervo e publicação → Publicação no YouTube**, choose the exact export and confirm its private upload. Wait for processing, then confirm assets, publication or a timezone-aware schedule. A failed final response requires a status check against the existing upload session or video ID. An interrupted or expired upload can be reconciled with an existing video from Studio.
+
+The reporting windows count Pacific calendar dates from the published date. Imports show coverage, original views, watch metrics, traffic and retention points. Enabling Reach requests a daily report from the YouTube Reporting API. Official data stays in the YouTube panel. Use the separately entered experiment observations for the current Codex comparison workflow.
 
 ## Project agent API
 

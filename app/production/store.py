@@ -100,6 +100,29 @@ CREATE INDEX IF NOT EXISTS project_edit_proposals ON edit_proposals(project, cre
 CREATE INDEX IF NOT EXISTS project_versions ON versions(project, slot, seq DESC);
 CREATE INDEX IF NOT EXISTS project_jobs ON jobs(project, created);
 CREATE INDEX IF NOT EXISTS ready_jobs ON jobs(status, available);
+CREATE TABLE IF NOT EXISTS youtube_connections (
+    owner TEXT PRIMARY KEY, channel TEXT NOT NULL, title TEXT NOT NULL,
+    refresh_token BLOB NOT NULL, writable INTEGER NOT NULL, revision TEXT NOT NULL,
+    verified REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS youtube_publications (
+    project TEXT NOT NULL REFERENCES projects(id), export TEXT NOT NULL REFERENCES versions(id),
+    channel TEXT NOT NULL, video TEXT, state TEXT NOT NULL, request TEXT NOT NULL,
+    upload_url BLOB, received INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0, last_error TEXT, visibility TEXT, processing TEXT,
+    scheduled TEXT, pending TEXT, created REAL NOT NULL,
+    PRIMARY KEY(project, export), UNIQUE(channel, video)
+);
+CREATE TABLE IF NOT EXISTS youtube_events (
+    id INTEGER PRIMARY KEY, project TEXT NOT NULL, export TEXT NOT NULL,
+    actor TEXT NOT NULL, event TEXT NOT NULL, created REAL NOT NULL,
+    FOREIGN KEY(project, export) REFERENCES youtube_publications(project, export) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS youtube_metrics (
+    project TEXT NOT NULL, export TEXT NOT NULL, days INTEGER NOT NULL,
+    data TEXT NOT NULL, retrieved REAL NOT NULL, PRIMARY KEY(project, export, days),
+    FOREIGN KEY(project, export) REFERENCES youtube_publications(project, export) ON DELETE CASCADE
+);
 PRAGMA user_version=1;
 """
 
