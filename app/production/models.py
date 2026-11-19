@@ -55,8 +55,9 @@ class Style(Input):
 
 
 class ProviderDefaults(Input):
-    research: Literal["local", "openai"] = "local"
-    script: Literal["local", "openai"] = "local"
+    research: Literal["local", "openai", "codex"] = "local"
+    script: Literal["local", "openai", "codex"] = "local"
+    translation: Literal["openai", "codex"] = "openai"
     image: Literal["local", "openai"] = "local"
     video: Literal["local", "runway"] = "local"
     voice: Literal["local", "openai"] = "local"
@@ -255,7 +256,7 @@ class DeliveryMetadata(Input):
 
 class RequestJob(Input):
     operation: Operation
-    provider: Literal["local", "openai", "runway"] | None = None
+    provider: Literal["local", "openai", "runway", "codex"] | None = None
     scene: Id | None = None
     language: Language | None = None
     version: Id | None = None

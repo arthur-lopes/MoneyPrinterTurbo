@@ -7,13 +7,14 @@ import json
 import os
 from pathlib import Path
 import shutil
+from tempfile import TemporaryDirectory
 import time
 from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
 
-from . import media
+from . import codex_cli, media
 from .models import Research, Script, Translation
 from .workbench import KEYS
 
@@ -255,6 +256,29 @@ def _voice_data(payload, provider, model, output):
         "model": model,
         "seconds": media.audio_duration(output),
     }
+
+
+class CodexSubscription:
+    def run(self, job, root, scratch, stop, progress):
+        spec = job["spec"]
+        kind, payload = job["operation"], spec["payload"]
+        try:
+            with TemporaryDirectory(prefix="mpt-codex-run-") as directory:
+                data = codex_cli.generate(
+                    kind,
+                    _context_prompt(kind, payload),
+                    spec["model"],
+                    Path(directory),
+                    stop,
+                    spec["timeout"],
+                )
+        except codex_cli.CodexStopped as exc:
+            raise ProviderError(str(exc), cancelled=True) from None
+        except codex_cli.CodexError as exc:
+            raise ProviderError(str(exc)) from None
+        if not isinstance(data, dict):
+            raise ProviderError("Codex did not return a structured object")
+        return Result(_validated_text(kind, data, payload))
 
 
 class OpenAI:

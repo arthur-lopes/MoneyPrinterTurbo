@@ -10,7 +10,7 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | GET, POST /api/projects | List or create projects. Create takes title, topic, audience, duration, tone, structure, languages, currency and optional style. |
 | GET /api/projects/{project} | Project metadata, scene order, versions, reviews, costs and jobs. |
 | PUT /api/projects/{project}/style | Save a project style guide and stale affected storyboard versions. |
-| PUT /api/projects/{project}/defaults | Set preferred project providers for research, script, images, new video scenes, and narration. |
+| PUT /api/projects/{project}/defaults | Set preferred project providers for research, script, translation, images, new video scenes, and narration. |
 | POST /api/projects/{project}/research | Save sources and claims. Sources contain title, URL and excerpt. Claims contain text, category and one-based source indices. |
 | POST /api/projects/{project}/script | Save script sections with key, title, narration, seconds, category and source indices. |
 | POST /api/projects/{project}/storyboard | Build affected scenes from the current approved script. |
@@ -28,8 +28,10 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | POST /api/projects/{project}/jobs/{job}/reconcile | Poll a failed Runway job using its stored task ID. |
 | POST /api/projects/{project}/jobs/{job}/settle | Record integer `actual`, `receipt`, and `confirmed: true`. |
 | PUT /api/projects/{project}/budget | Set `scope`, optional `target`, integer `limit`, and `confirmed: true`. |
-| GET, PUT /api/providers | Read capabilities and credential availability or configure provider, operation, model, currency, rate ceiling, timeout, interval and enabled state. |
-| POST /api/projects/{project}/uploads | Raw bytes. Use query `kind=reference\|audio\|video\|voice` and `title`. Video and voice use `scene`. Voice also uses `language`. |
+| GET, PUT /api/providers | Read capabilities and credential availability or configure API providers. The Codex read-only entry reports whether the local CLI is signed into ChatGPT. |
+| POST /api/projects/{project}/uploads | Raw bytes. Use query `kind=reference\|image\|audio\|video\|voice` and `title`. Storyboard images, video, and voice use `scene`. Voice also uses `language`. |
 | GET, HEAD /api/projects/{project}/media/{version} | Owner-authenticated media, single byte range, optional `attachment=true`. |
 
 Job operations are `research`, `script`, `image`, `video`, `translation`, `voice`, `assembly`, and `export`. Include the scene ID for scene operations, language for translation and voice, timeline for assembly, and approved assembly version for export. Validation errors return 422. Missing private resources return 404. Conflicting versions, approvals or budgets return 409. Schema definitions are in `app/production/models.py`.
+
+Use `provider: "codex"` for research, scripts, and translations. The quote marks the item `billing: "subscription"` and still requires confirmation. The monetary estimate covers direct API spend. ChatGPT manages its own usage allowance, credits, and automatic reload.

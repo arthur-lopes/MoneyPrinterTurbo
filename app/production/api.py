@@ -379,7 +379,7 @@ def create_app(
     async def upload(
         pid: m.Id,
         request: Request,
-        kind: Literal["reference", "audio", "video", "voice"],
+        kind: Literal["reference", "image", "audio", "video", "voice"],
         title: m.Short,
         scene: m.Id | None = None,
         language: m.Language | None = None,
@@ -387,11 +387,22 @@ def create_app(
     ):
         def import_source(db):
             project = store.project(db, actor, pid)["data"]
-            if kind not in {"video", "voice"}:
+            if kind not in {"image", "video", "voice"}:
                 return None, [], {"title": title}
             if not scene or scene not in store.order(db, pid):
                 raise RuleError("Choose an active storyboard scene")
             storyboard = store.require(db, pid, f"scene/{scene}")
+            if kind == "image":
+                return (
+                    f"image/{scene}",
+                    [{"id": storyboard["id"]}],
+                    {
+                        "title": title,
+                        "prompt": storyboard["data"]["image_prompt"],
+                        "provider": "local",
+                        "model": "import",
+                    },
+                )
             if kind == "video":
                 image = store.require(db, pid, f"image/{scene}")
                 return (
@@ -426,6 +437,7 @@ def create_app(
             raise HTTPException(429, "Upload rate exceeded")
         limit = {
             "reference": media.MAX_IMAGE,
+            "image": media.MAX_IMAGE,
             "audio": media.MAX_AUDIO,
             "voice": media.MAX_AUDIO,
             "video": media.MAX_VIDEO,
@@ -448,6 +460,7 @@ def create_app(
                 Path(directory)
                 / {
                     "reference": "asset.png",
+                    "image": "asset.png",
                     "video": "asset.mp4",
                     "audio": "asset.wav",
                     "voice": "asset.wav",
@@ -455,7 +468,7 @@ def create_app(
             )
             slot, deps, data = inputs
             try:
-                if kind == "reference":
+                if kind in {"reference", "image"}:
                     await run_in_threadpool(media.sanitize_image, source, target)
                 elif kind == "video":
                     data = dict(

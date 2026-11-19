@@ -68,6 +68,8 @@ const format = (amount, currency = project?.costs.currency || "USD") => new Intl
   {style: "currency", currency}).format(amount / 100);
 const parse = element => JSON.parse(element.value);
 const json = value => JSON.stringify(value, null, 2);
+const codexOption = () => ["codex", tr("Codex · ChatGPT plan", "Codex · assinatura ChatGPT")];
+const apiOption = ["openai", "OpenAI API"];
 
 function notify(message) {
   ui("notices").replaceChildren(node("p", {}, message));
@@ -162,11 +164,16 @@ async function quote(jobs) {
   const result = await api(path("/quotes"), "POST", {jobs});
   const maximum = input((result.total / 100).toFixed(2), {type: "number", min: 0, step: ".01"});
   const consent = input("", {type: "checkbox"});
+  const usesCodex = result.items.some(item => item.billing === "subscription");
   modal(tr("Authorize generation", "Autorizar geração"), stack(
-    node("p", {}, tr("Estimated cost ", "Custo estimado ") + format(result.total, result.currency) + " · " +
+    node("p", {}, (usesCodex ? tr("Estimated direct API spend ", "Gasto direto estimado com API ") :
+      tr("Estimated cost ", "Custo estimado ")) + format(result.total, result.currency) + " · " +
       tr("Remaining budget ", "Orçamento restante ") + format(result.budget.remaining, result.currency)),
     node("p", {}, `${result.scene_count} ${tr("scenes", "cenas")} · ${result.attempts} ${tr("authorized attempts", "tentativas autorizadas")}`),
-    node("ul", {}, result.items.map(item => node("li", {}, `${item.slot.split("/")[0]} · ${item.provider} · ${item.model} · ${format(item.estimate)}`))),
+    node("ul", {}, result.items.map(item => node("li", {}, `${item.slot.split("/")[0]} · ${item.provider} · ${item.model} · ${item.billing === "subscription" ? tr("ChatGPT plan usage", "Uso da assinatura ChatGPT") : format(item.estimate)}`))),
+    usesCodex && node("p", {}, tr(
+      "Codex uses your plan allowance or existing ChatGPT credits. Check that automatic reload is off in ChatGPT Usage to avoid buying more.",
+      "O Codex usa a franquia ou o saldo de créditos do ChatGPT. Confira se a recarga automática está desativada em Uso no ChatGPT para evitar novas compras.")),
     label(tr("Maximum authorized spend", "Gasto máximo autorizado"), maximum),
     label(tr("I authorize these jobs at this maximum", "Autorizo estes trabalhos até esse limite"), consent)), [
     button(tr("Authorize and queue", "Autorizar e enfileirar"), async () => {
@@ -200,7 +207,8 @@ function revisions(slot) {
 }
 
 function importAsset(kind, scene, language) {
-  const file = input("", {type: "file", accept: kind === "video" ? "video/mp4,video/quicktime" : "audio/wav,audio/mpeg,audio/flac"});
+  const types = {image: "image/png,image/jpeg,image/webp", video: "video/mp4,video/quicktime", voice: "audio/wav,audio/mpeg,audio/flac"};
+  const file = input("", {type: "file", accept: types[kind]});
   const name = input();
   modal(tr("Import prepared media", "Importar mídia preparada"), stack(label(tr("Media title", "Título da mídia"), name),
     label(tr("Media file", "Arquivo de mídia"), file)), [button(tr("Upload for review", "Enviar para revisão"), async () => {
@@ -280,7 +288,7 @@ function researchView() {
   const item = current("research");
   const sources = area(json(item?.data.sources || []));
   const claims = area(json(item?.data.claims || []));
-  const provider = select([["local", tr("Local worksheet", "Ficha local")], ["openai", "OpenAI"]], project.data.defaults?.research || "local");
+  const provider = select([["local", tr("Local worksheet", "Ficha local")], codexOption(), apiOption], project.data.defaults?.research || "local");
   const name = input();
   const url = input("", {type: "url"});
   const excerpt = area();
@@ -309,7 +317,7 @@ function scriptsView() {
   const fallback = [{key: "hook", title: tr("Opening hook", "Abertura"), seconds: 5,
     narration: project.data.topic, category: "uncertain", sources: []}];
   const sections = (item?.data.sections || fallback).map(s => ({...s}));
-  const provider = select([["local", tr("Local outline", "Estrutura local")], ["openai", "OpenAI"]], project.data.defaults?.script || "local");
+  const provider = select([["local", tr("Local outline", "Estrutura local")], codexOption(), apiOption], project.data.defaults?.script || "local");
   const instructions = area("", {placeholder: tr("Variation or revision instructions", "Instruções para variação ou revisão")});
   const form = stack();
   function fields() {
@@ -419,6 +427,7 @@ function storyboardView() {
         button("↓", () => moveScene(sid, 1), false, i === project.scenes.length - 1)),
       reviewControls(scene), button(tr("Estimate reference image", "Estimar imagem de referência"),
         () => quote([{operation: "image", scene: sid, provider: provider.value}]), false, !ready(scene) || ready(image)),
+      button(tr("Import storyboard frame", "Importar quadro do storyboard"), () => importAsset("image", sid), false, !ready(scene)),
       revisions(scene.slot), image && revisions(image.slot));
   });
   return stack(title(tr("Storyboard", "Storyboard")), card(
@@ -479,11 +488,13 @@ function narrationView() {
     const scene = sceneData(sid), translation = current("translation/" + sid + "/" + language);
     const voice = current("voice/" + sid + "/" + language);
     const provider = select([["local", tr("System voice", "Voz do sistema")], ["openai", "OpenAI"]], project.data.defaults?.voice || "local");
+    const translationProvider = select([codexOption(), apiOption], project.data.defaults?.translation || "openai");
     const voiceName = input(voice?.data.voice || "alloy");
     return card(row(node("h2", {}, scene.data.title), small(language)), node("p", {}, i ? translation?.data.narration : scene.data.narration),
       i > 0 && row(assetBadge(translation), button(tr("Edit translation", "Editar tradução"), () => editTranslation(sid, language, translation), false, !ready(scene)),
+        label(tr("Translation provider", "Provedor de tradução"), translationProvider),
         button(tr("Estimate AI translation", "Estimar tradução por IA"),
-          () => quote([{operation: "translation", scene: sid, language, provider: "openai"}]), false, !ready(scene))),
+          () => quote([{operation: "translation", scene: sid, language, provider: translationProvider.value}]), false, !ready(scene))),
       reviewControls(translation), row(label(tr("Speech provider", "Provedor de voz"), provider),
         label(tr("Voice name", "Nome da voz"), voiceName)),
       button(tr("Estimate narration", "Estimar narração"),
@@ -683,6 +694,20 @@ async function providersView() {
     "Set credentials in the workstation environment. Rates are operator-entered ceilings in " + currency + ".",
     "Configure as credenciais no ambiente da estação. Os valores são tetos informados pelo operador em " + currency + ".")),
   grid(...providers.map(p => {
+    if (p.billing === "subscription") {
+      const labels = {
+        chatgpt: ["Signed in with ChatGPT", "Conectado com o ChatGPT"],
+        missing: ["Codex CLI missing", "Codex CLI ausente"],
+        login_required: ["ChatGPT login required", "Login com ChatGPT necessário"],
+        unavailable: ["Codex status unavailable", "Status do Codex indisponível"],
+        invalid_model: ["Invalid Codex model configuration", "Configuração de modelo Codex inválida"],
+      };
+      return card(node("h2", {}, tr("Codex · ChatGPT plan", "Codex · assinatura ChatGPT")),
+        row(badge(p.credential_present ? "COMPLETED" : "DRAFT"), tr(...labels[p.status])),
+        small(tr("Research, scripts and translations use your signed-in Codex account.", "Pesquisa, roteiros e traduções usam a sua conta conectada no Codex.")),
+        !p.credential_present && node("p", {}, tr("Check your connection with ", "Verifique a conexão com "),
+          node("code", {}, "codex login status"), tr(" or sign in with ", " ou conecte-se com "), node("code", {}, "codex login")));
+    }
     const saved = p.configurations[currency];
     const model = select(p.models.map(value => [value, value]), saved?.model);
     const rate = input(saved ? (saved.ceiling / 100).toFixed(2) : "", {type: "number", min: ".01", step: ".01"});
@@ -717,12 +742,14 @@ function settingsView() {
   const aspect = select([["16:9", "16:9"], ["9:16", "9:16"]], data.aspect);
   const defaults = {...project.data.defaults};
   const operations = {
-    research: ["Research", "Pesquisa"], script: ["Script", "Roteiro"], image: ["Image", "Imagem"],
+    research: ["Research", "Pesquisa"], script: ["Script", "Roteiro"], translation: ["Translation", "Tradução"], image: ["Image", "Imagem"],
     video: ["Video for new scenes", "Vídeo para novas cenas"], voice: ["Narration", "Narração"],
   };
   const preferences = Object.entries(operations).map(([key, names]) => {
-    const remote = key === "video" ? "runway" : "openai";
-    const field = select([["local", tr("Local", "Local")], [remote, remote === "runway" ? "Runway" : "OpenAI"]], defaults[key] || "local");
+    const options = key === "translation" ? [codexOption(), apiOption] : [["local", "Local"]];
+    if (key === "research" || key === "script") options.push(codexOption());
+    if (key !== "translation") options.push(key === "video" ? ["runway", "Runway"] : apiOption);
+    const field = select(options, defaults[key] || (key === "translation" ? "openai" : "local"));
     field.addEventListener("change", () => { defaults[key] = field.value; });
     return label(tr(...names), field);
   });

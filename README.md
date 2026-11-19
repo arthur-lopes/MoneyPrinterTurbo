@@ -39,6 +39,16 @@ Local previews and motion clips work offline. Narration can use installed Window
 
 See the [product requirements](PRD.md), [architecture](ARCHITECTURE.md), [API](API_DOCUMENTATION.md), [security scope](SECURITY.md), and [tests](TESTING.md).
 
+### Use your ChatGPT plan in production
+
+The **Codex · ChatGPT plan** provider uses the official local Codex CLI for research from supplied sources, scripts and translations. Run `codex login status` and look for `Logged in using ChatGPT`. Use `codex login` if you need to sign in. Launch the studio under the same OS account, check **Providers**, then choose Codex when estimating a text job or set it under **Settings → Default providers**.
+
+Each job still requires confirmation. The studio records these calls as ChatGPT plan usage with zero direct API spend and uses no API-key fallback. ChatGPT may use your existing credits after included usage runs out. Turn off automatic reload in ChatGPT **Settings → Usage** if you want to avoid new credit purchases. The studio cannot inspect that setting or your credit balance. [Codex sign-in](https://learn.chatgpt.com/docs/auth) · [ChatGPT credit controls](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-personal-plans)
+
+On eligible accounts you can generate a still in an interactive Codex or ChatGPT session, save it, then choose **Import storyboard frame** on an approved scene. Review the imported frame before animation. The Codex subscription adapter handles text. Use local motion and system narration options to keep video assembly and voice synthesis local. [Codex image generation](https://learn.chatgpt.com/docs/image-generation)
+
+The studio finds the native Codex binary on `PATH` or within the official Windows npm installation. Advanced setups can set an absolute `MPT_PRODUCTION_CODEX_BINARY` or a `MPT_PRODUCTION_CODEX_MODEL` supported by the account. Model selection defaults to the official CLI.
+
 ## 界面预览 🖥️
 
 <h4 align="center">WebUI</h4>

@@ -5,6 +5,7 @@ import os
 import time
 from uuid import uuid4
 
+from . import codex_cli
 from .store import ACTIVE, SCENE_OPERATIONS, RuleError, Store, encode, unpack
 
 
@@ -53,7 +54,7 @@ class Workbench(Store):
                 ]
                 for r in db.execute("SELECT * FROM providers WHERE owner=?", (actor,))
             }
-        return [
+        providers = [
             {
                 "provider": name,
                 "operation": operation,
@@ -73,6 +74,24 @@ class Workbench(Store):
             }
             for (name, operation), models in MODELS.items()
         ]
+        state = codex_cli.connection_status()
+        try:
+            model = codex_cli.model()
+        except codex_cli.CodexError:
+            model, state = None, "invalid_model"
+        providers.insert(
+            0,
+            {
+                "provider": "codex",
+                "operation": "text",
+                "billing": "subscription",
+                "status": state,
+                "model": model,
+                "credential_present": state == "chatgpt",
+                "capabilities": {"operations": sorted(codex_cli.OPERATIONS)},
+            },
+        )
+        return providers
 
     def budget(self, actor, pid, request):
         with self.transaction() as db:
@@ -102,6 +121,21 @@ class Workbench(Store):
                 "estimate": 0,
                 "timeout": 1800 if operation == "assembly" else 180,
                 "interval": 0,
+            }
+        if provider == "codex":
+            if not codex_cli.executable():
+                raise RuleError("Install the official Codex CLI on the production host")
+            try:
+                model = codex_cli.model()
+            except codex_cli.CodexError as exc:
+                raise RuleError(str(exc)) from None
+            return {
+                "provider": "codex",
+                "model": model,
+                "estimate": 0,
+                "timeout": 180,
+                "interval": 3,
+                "billing": "subscription",
             }
         if (provider, operation) not in MODELS:
             raise RuleError("This provider does not support the operation")
@@ -213,6 +247,10 @@ class Workbench(Store):
             kind, "openai" if kind == "translation" else "local"
         )
         provider = request.provider or default_provider
+        if provider == "codex" and kind not in codex_cli.OPERATIONS:
+            raise RuleError(
+                "The Codex subscription provider supports research, scripts and translations"
+            )
         if kind == "translation" and provider == "local":
             raise RuleError(
                 "Use an AI translation provider or enter a translation manually"
@@ -359,6 +397,11 @@ class Workbench(Store):
                     {
                         key: spec[key]
                         for key in ("slot", "provider", "model", "estimate")
+                    }
+                    | {
+                        "billing": spec.get(
+                            "billing", "local" if spec["provider"] == "local" else "api"
+                        )
                     }
                     for spec in specs
                 ],
@@ -549,6 +592,8 @@ class Workbench(Store):
     def _provider_enabled(self, db, job):
         if job["provider"] == "local":
             return True
+        if job["provider"] == "codex":
+            return bool(codex_cli.executable())
         row = db.execute(
             """SELECT c.data FROM providers c JOIN projects p ON p.owner=c.owner
             AND c.currency=json_extract(p.data,'$.currency') WHERE p.id=?
@@ -577,7 +622,9 @@ class Workbench(Store):
                         db,
                         job,
                         "FAILED",
-                        "Interrupted during provider submission. Verify billing.",
+                        "Interrupted during Codex generation. Check account usage before retrying."
+                        if job["provider"] == "codex"
+                        else "Interrupted during provider submission. Verify billing.",
                     )
 
     def claim(self):
@@ -602,7 +649,7 @@ class Workbench(Store):
                     )
                     continue
                 submitting = job["provider"] != "local" and not job["remote"]
-                if submitting:
+                if submitting and job["spec"]["estimate"]:
                     reservation = db.execute(
                         "SELECT period_day,period_month FROM ledger WHERE job=?",
                         (job["id"],),
@@ -623,6 +670,7 @@ class Workbench(Store):
                     except RuleError as exc:
                         self._finish(db, job, "CANCELLED", str(exc), safe=True)
                         continue
+                if submitting:
                     other = db.execute(
                         """SELECT MAX(submitted) AS last FROM jobs
                         WHERE provider=? AND id!=? AND attempts>0""",
