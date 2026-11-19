@@ -1,7 +1,9 @@
 """Bounded local media ingestion and rendering with FFmpeg."""
 
+from contextlib import suppress
 import math
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -16,6 +18,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from app.utils.subtitle_writer import write_subtitle_file
 
+from .clip_cache import ClipCache, checksum
+
 
 MAX_IMAGE = 12 * 1024 * 1024
 MAX_AUDIO = 40 * 1024 * 1024
@@ -28,6 +32,17 @@ FORMATS = {
     "mp4": "video/mp4",
     "srt": "text/plain; charset=utf-8",
 }
+FFMPEG_OPTIONS = (
+    "-nostdin",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-filter_threads",
+    "2",
+    "-filter_complex_threads",
+    "2",
+    "-y",
+)
 
 
 class MediaError(Exception):
@@ -81,18 +96,7 @@ def run(args, *, cwd, stop, timeout, process_group=False):
 
 
 def ffmpeg(args, *, cwd, stop, timeout):
-    command = [
-        imageio_ffmpeg.get_ffmpeg_exe(),
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-filter_threads",
-        "2",
-        "-filter_complex_threads",
-        "2",
-        "-y",
-    ]
+    command = [imageio_ffmpeg.get_ffmpeg_exe(), *FFMPEG_OPTIONS]
     for arg in args:
         if arg == "-i":
             command.extend(["-protocol_whitelist", "file,pipe"])
@@ -415,7 +419,7 @@ def webvtt(path):
     return "WEBVTT\n\n" + "\n\n".join(lines)
 
 
-def render(root, timeline, output, stop, timeout, progress):
+def render(root, timeline, output, stop, timeout, progress, *, cache_scope=None):
     scratch = output.parent
     height = timeline["resolution"]
     width = height * 16 // 9
@@ -430,17 +434,39 @@ def render(root, timeline, output, stop, timeout, progress):
             args, cwd=scratch, stop=stop, timeout=max(0.1, deadline - time.monotonic())
         )
 
+    cache = None
+    if cache_scope:
+        encoder = imageio_ffmpeg.get_ffmpeg_exe()
+        with suppress(OSError):
+            cache = ClipCache(
+                root.parent / "render-cache",
+                cache_scope,
+                Path(shutil.which(encoder) or encoder),
+            )
+    draft = None
+    if timeline["watermark"]:
+        # Bundled builds vary in drawtext support. Burn in a generated RGBA label.
+        label = Image.new("RGBA", (140, 42), (0, 0, 0, 170))
+        ImageDraw.Draw(label).text(
+            (15, 8), "DRAFT", fill="white", font=ImageFont.load_default(size=23)
+        )
+        label.save(scratch / "draft.png")
+        draft = checksum(scratch / "draft.png") if cache else None
+
     total = 0
     for number, clip in enumerate(timeline["clips"]):
+        if stop():
+            raise Stopped("Job stopped")
         seconds = clip["seconds"]
         total += seconds
-        args = ["-ss", clip["trim"], "-f", "mov", "-i", asset_path(root, clip["video"])]
+        sources = [asset_path(root, clip["video"])]
+        args = ["-ss", clip["trim"], "-f", "mov", "-i", sources[0]]
         for language in languages:
-            args.extend(
-                ["-f", "wav", "-i", asset_path(root, clip["audio"][language]["media"])]
-            )
+            sources.append(asset_path(root, clip["audio"][language]["media"]))
+            args.extend(["-f", "wav", "-i", sources[-1]])
         if clip["effect"]:
-            args.extend(["-f", "wav", "-i", asset_path(root, clip["effect"])])
+            sources.append(asset_path(root, clip["effect"]))
+            args.extend(["-f", "wav", "-i", sources[-1]])
         vf = (
             f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
             f"setsar=1,fps=24,tpad=stop_mode=clone:stop_duration={seconds}"
@@ -449,13 +475,7 @@ def render(root, timeline, output, stop, timeout, progress):
             fade = min(0.4, seconds / 3)
             vf += f",fade=t=in:d={fade},fade=t=out:st={seconds - fade}:d={fade}"
         if timeline["watermark"]:
-            # Bundled builds vary in drawtext support. Burn in a generated RGBA label.
-            label = Image.new("RGBA", (140, 42), (0, 0, 0, 170))
-            ImageDraw.Draw(label).text(
-                (15, 8), "DRAFT", fill="white", font=ImageFont.load_default(size=23)
-            )
-            label.save(scratch / "draft.png")
-            args.extend(["-f", "image2", "-i", scratch / "draft.png"])
+            args.extend(["-f", "image2", "-i", "draft.png"])
             label_index = 1 + len(languages) + int(bool(clip["effect"]))
             filters = [f"[0:v]{vf}[base];[base][{label_index}:v]overlay=24:24[v]"]
         else:
@@ -499,10 +519,18 @@ def render(root, timeline, output, stop, timeout, progress):
                 48000,
                 "-ac",
                 2,
-                f"clip-{number}.mp4",
             ]
         )
-        invoke(args)
+        segment = scratch / f"clip-{number}.mp4"
+        key = cache.key([*FFMPEG_OPTIONS, *args], sources, draft) if cache else None
+        reused = False
+        if key:
+            with suppress(OSError):
+                reused = cache.restore(key, segment)
+        if not reused:
+            invoke([*args, segment.name])
+            if key:
+                cache.remember(key, segment)
         progress(15 + 70 * (number + 1) / len(timeline["clips"]))
     (scratch / "clips.txt").write_text(
         "".join(f"file clip-{i}.mp4\n" for i in range(len(timeline["clips"]))),

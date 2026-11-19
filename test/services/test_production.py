@@ -1435,6 +1435,92 @@ def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
         )
 
 
+def test_render_reuses_unchanged_segments_and_rebuilds_corrupt_cache(
+    tmp_path, monkeypatch
+):
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    image = tmp_path / "image.png"
+    Image.new("RGB", (96, 128), "navy").save(image)
+    video = assets / ("a" * 32 + ".mp4")
+    voice = assets / ("b" * 32 + ".wav")
+    stop = Event()
+    media.motion(image, video, 1.25, "9:16", stop.is_set, 15)
+    write_voice(voice)
+    clip = {
+        "video": video.name,
+        "trim": 0.0,
+        "seconds": 0.75,
+        "narration_offset": 0.0,
+        "transition": "cut",
+        "effect": None,
+        "audio": {
+            "en-US": {"media": voice.name, "seconds": 0.5, "narration": "Original"}
+        },
+    }
+    timeline = {
+        "clips": [clip, dict(clip, trim=0.25)],
+        "aspect": "9:16",
+        "resolution": 720,
+        "languages": ["en-US"],
+        "watermark": False,
+        "subtitles": True,
+        "music": None,
+    }
+    encodes = []
+    original = media.ffmpeg
+
+    def track(args, **kwargs):
+        if str(args[-1]).startswith("clip-"):
+            encodes.append(args[-1])
+        original(args, **kwargs)
+
+    def render(name, scope="project"):
+        scratch = tmp_path / name
+        scratch.mkdir()
+        output = scratch / "assembly.mp4"
+        encodes.clear()
+        media.render(
+            assets,
+            timeline,
+            output,
+            stop.is_set,
+            15,
+            lambda _value: None,
+            cache_scope=scope,
+        )
+        return output
+
+    monkeypatch.setattr(media, "ffmpeg", track)
+    initial = render("initial")
+    assert encodes == ["clip-0.mp4", "clip-1.mp4"]
+    assert render("warm").read_bytes() == initial.read_bytes()
+    assert encodes == []
+
+    timeline["clips"][0] = dict(clip, captions={"en-US": "Corrected"})
+    corrected = render("corrected")
+    assert encodes == []
+    assert (corrected.parent / "captions-0.srt").read_text().count("Corrected") == 1
+    assert corrected.read_bytes() == render("uncached", None).read_bytes()
+
+    timeline["clips"][1]["trim"] = 0.375
+    trimmed = render("trimmed")
+    assert encodes == ["clip-1.mp4"]
+    assert trimmed.read_bytes() == render("isolated", "different-project").read_bytes()
+    assert encodes == ["clip-0.mp4", "clip-1.mp4"]
+
+    # Replace rather than edit in place because cached files are hard links.
+    for entry in (tmp_path / "render-cache").glob("*.mp4"):
+        entry.unlink()
+        entry.write_bytes(b"unreadable")
+    assert render("recovered").read_bytes() == trimmed.read_bytes()
+    assert encodes == ["clip-0.mp4", "clip-1.mp4"]
+    stop.set()
+    with pytest.raises(media.Stopped):
+        render("cancelled")
+    assert encodes == []
+
+
 def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
     store, actor, pid = sandbox
     with store.transaction() as db:

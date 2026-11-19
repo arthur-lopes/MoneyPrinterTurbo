@@ -297,7 +297,13 @@ class Local:
             return self._rough_cut(payload, scratch, stop, timeout, progress)
         if kind == "assembly":
             result = self._assembly(
-                payload["timeline"], root, scratch, stop, timeout, progress
+                payload["timeline"],
+                root,
+                scratch,
+                stop,
+                timeout,
+                progress,
+                cache_scope=job["project"],
             )
             if "timeline_revision" in payload:
                 result.data["timeline_revision"] = payload["timeline_revision"]
@@ -309,9 +315,13 @@ class Local:
         raise media.MediaError("Unknown local operation")
 
     @staticmethod
-    def _assembly(timeline, root, scratch, stop, timeout, progress):
+    def _assembly(
+        timeline, root, scratch, stop, timeout, progress, *, cache_scope=None
+    ):
         output = scratch / "assembly.mp4"
-        duration = media.render(root, timeline, output, stop, timeout, progress)
+        duration = media.render(
+            root, timeline, output, stop, timeout, progress, cache_scope=cache_scope
+        )
         captions = {
             lang: scratch / f"captions-{i}.srt"
             for i, lang in enumerate(timeline["languages"])
