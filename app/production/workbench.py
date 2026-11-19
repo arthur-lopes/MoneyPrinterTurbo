@@ -30,6 +30,20 @@ LOCAL_MODELS = {
 }
 
 
+def _deployment_draining():
+    path = os.getenv("MPT_PRODUCTION_DRAIN_LOCK")
+    if not path:
+        return False
+    import fcntl
+
+    with open(path, "rb") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
 class Workbench(Store):
     def provider(self, actor, request):
         if request.model not in MODELS.get((request.provider, request.operation), ()):
@@ -629,6 +643,8 @@ class Workbench(Store):
 
     def claim(self):
         with self.transaction() as db:
+            if _deployment_draining():
+                return None
             now = time.time()
             for row in db.execute(
                 "SELECT * FROM jobs WHERE status='DRAFT' AND available<=? ORDER BY available,created",

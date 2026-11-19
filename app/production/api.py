@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 import hmac
+import os
 from pathlib import Path
 import re
 import secrets
@@ -194,6 +195,23 @@ def create_app(
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon():
         return Response(status_code=204)
+
+    @app.get("/api/health")
+    def health():
+        # Serialize with job admission so deploys can see the final claim before draining.
+        with store.transaction() as db:
+            active = db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status='GENERATING'"
+            ).fetchone()[0]
+        ready = not worker_enabled or worker.thread.is_alive()
+        return JSONResponse(
+            {
+                "status": "ready" if ready else "starting",
+                "revision": os.getenv("MPT_PRODUCTION_RELEASE", ""),
+                "active_jobs": active,
+            },
+            status_code=200 if ready else 503,
+        )
 
     @app.get("/ui/{name}", include_in_schema=False)
     def static(name: Literal["workspace.js", "workspace.css"]):

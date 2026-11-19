@@ -49,6 +49,12 @@ On eligible accounts you can generate a still in an interactive Codex or ChatGPT
 
 The studio finds the native Codex binary on `PATH` or within the official Windows npm installation. Advanced setups can set an absolute `MPT_PRODUCTION_CODEX_BINARY` or a `MPT_PRODUCTION_CODEX_MODEL` supported by the account. Model selection defaults to the official CLI.
 
+### VPS releases
+
+The fork deploys pushes to `main` via [GitHub Actions](.github/workflows/deploy-vps.yml). The workflow tests and packages the exact commit, then verifies the live revision. The deploy waits for running jobs and restores the prior release if activation fails. Data and the Codex sign-in live outside release directories.
+
+The VPS service serves `127.0.0.1:8765`. Forward that port over SSH and open the local URL in a browser. The operator token is stored in `/etc/moneyprinter/service.env` for the VPS administrator. For subscription-backed generation, run `sudo -u moneyprinter env HOME=/var/lib/moneyprinter CODEX_HOME=/var/lib/moneyprinter/codex /opt/moneyprinter/codex/bin/codex login --device-auth` on the VPS and authorize the device on your ChatGPT account.
+
 ## 界面预览 🖥️
 
 <h4 align="center">WebUI</h4>

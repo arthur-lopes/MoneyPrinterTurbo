@@ -1,0 +1,65 @@
+name: Deploy MoneyPrinter to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moneyprinter-vps-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'arthur-lopes/MoneyPrinterTurbo' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.13.9"
+      - name: Test and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --frozen --python 3.11.18
+          uv run --no-sync python -m pytest -q test/services/test_production.py test/services/test_production_codex.py
+          node --check app/production/web/workspace.js
+          mkdir "$RUNNER_TEMP/release"
+          uv build --wheel --out-dir "$RUNNER_TEMP/release"
+          cp pyproject.toml uv.lock "$RUNNER_TEMP/release/"
+          printf '%s\n' "$GITHUB_SHA" >"$RUNNER_TEMP/release/REVISION"
+          tar -czf "$RUNNER_TEMP/moneyprinter.tgz" -C "$RUNNER_TEMP/release" pyproject.toml uv.lock REVISION +            "$(basename "$RUNNER_TEMP"/release/mpt-*.whl)"
+      - name: Activate the main revision and verify the live service
+        shell: bash
+        env:
+          VPS_HOST: ${{ vars.MONEYPRINTER_VPS_HOST }}
+          VPS_PORT: ${{ vars.MONEYPRINTER_VPS_PORT }}
+          VPS_KEY: ${{ secrets.MONEYPRINTER_VPS_DEPLOY_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.MONEYPRINTER_VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          main_sha=$(git ls-remote --exit-code origin refs/heads/main | cut -f1)
+          if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+              echo 'A newer main revision is queued.'
+              exit 0
+          fi
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ && "$VPS_PORT" =~ ^[0-9]{1,5}$ && -n "$VPS_KEY" && -n "$VPS_KNOWN_HOSTS" ]]
+          ssh_dir=$(mktemp -d)
+          trap 'rm -f -- "$ssh_dir/key" "$ssh_dir/known_hosts"; rmdir -- "$ssh_dir"' EXIT
+          umask 077
+          printf '%s\n' "$VPS_KEY" >"$ssh_dir/key"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" >"$ssh_dir/known_hosts"
+          unset VPS_KEY VPS_KNOWN_HOSTS
+          options=(-4 -i "$ssh_dir/key" -p "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes
+                   -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$ssh_dir/known_hosts"
+                   -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=15 -o ServerAliveInterval=15)
+          ssh "${options[@]}" "moneyprinter-deploy@$VPS_HOST" "deploy $GITHUB_SHA" <"$RUNNER_TEMP/moneyprinter.tgz"
+          ssh -n "${options[@]}" "moneyprinter-deploy@$VPS_HOST" status |
+            python3 -c 'import json, sys; data=json.load(sys.stdin); assert data["status"] == "ready" and data["revision"] == sys.argv[1]; print("Verified", data["revision"])' "$GITHUB_SHA"

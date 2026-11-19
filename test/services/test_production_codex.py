@@ -276,3 +276,36 @@ def test_imported_storyboard_frame_requires_its_own_review(project):
     store.review(actor, pid, [frame["id"]], decision)
     assert store.quote(actor, pid, video)["total"] == 0
     assert not store.snapshot(actor, pid)["jobs"]
+
+
+def test_health_identifies_the_current_process_revision(project, monkeypatch):
+    store, _ = project
+    revision = "a" * 40
+    monkeypatch.setenv("MPT_PRODUCTION_RELEASE", revision)
+    app = create_app(
+        store.directory,
+        {"a" * 32: "operator"},
+        worker_enabled=False,
+        allowed_hosts=("testserver",),
+    )
+    response = TestClient(app).get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "revision": revision,
+        "active_jobs": 0,
+    }
+
+
+def test_deploy_drain_pauses_claims_until_released(project, monkeypatch):
+    fcntl = pytest.importorskip("fcntl")
+    store, pid = project
+    drain = store.directory / "drain.lock"
+    drain.touch()
+    monkeypatch.setenv("MPT_PRODUCTION_DRAIN_LOCK", str(drain))
+    quote = store.quote("operator", pid, [m.RequestJob(operation="research")])
+    [jid] = store.authorize("operator", pid, quote["id"], 0)
+    with drain.open("rb+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        assert store.claim() is None
+    assert store.claim()["id"] == jid
