@@ -478,17 +478,62 @@ def create_app(
                 [{"speech": [sid, scene_asset["data"]["narration"]]}],
             )
 
+    @app.get("/api/projects/{pid}/timeline")
+    def timeline(
+        pid: m.Id,
+        response: Response,
+        revision: m.Id | None = None,
+        actor=Depends(authenticated),
+    ):
+        with store.transaction(write=False) as db:
+            store.project(db, actor, pid)
+            item = (
+                store.asset(db, pid, revision)
+                if revision
+                else store.head(db, pid, "timeline")
+            )
+            if not item or item["slot"] != "timeline":
+                raise RuleError("Timeline revision not found", 404)
+            response.headers["ETag"] = '"' + item["id"] + '"'
+            return item
+
     @app.put("/api/projects/{pid}/timeline")
-    def timeline(pid: m.Id, body: m.Timeline, actor=Depends(authenticated)):
+    def save_timeline(
+        pid: m.Id,
+        body: m.Timeline,
+        request: Request,
+        response: Response,
+        actor=Depends(authenticated),
+    ):
         with store.transaction() as db:
             project = store.project(db, actor, pid)
+            languages = set(body.languages) | {
+                lang for clip in body.clips for lang in clip.captions
+            }
             if {clip.scene for clip in body.clips} != set(
                 store.order(db, pid)
-            ) or not set(body.languages) <= set(project["data"]["languages"]):
+            ) or not languages <= set(project["data"]["languages"]):
                 raise RuleError(
                     "Timeline must match the active scenes and project languages"
                 )
-            return store.add(db, pid, "timeline", "timeline", body.model_dump())
+            data = body.model_dump()
+            current = store.head(db, pid, "timeline")
+            if current and current["data"] == data:
+                item = current
+            else:
+                etag = '"' + current["id"] + '"' if current else None
+                if (
+                    "if-match" in request.headers
+                    and request.headers["if-match"] != etag
+                    or request.headers.get("if-none-match") == "*"
+                    and current
+                ):
+                    raise RuleError(
+                        "The saved timeline changed. Reload it before saving.", 412
+                    )
+                item = store.add(db, pid, "timeline", "timeline", data)
+            response.headers["ETag"] = '"' + item["id"] + '"'
+            return item
 
     @app.post("/api/projects/{pid}/reviews")
     def review(pid: m.Id, body: BulkReview, actor=Depends(authenticated)):

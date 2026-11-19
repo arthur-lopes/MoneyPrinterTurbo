@@ -931,15 +931,69 @@ def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
     draft = review(store, actor, pid, head(store, pid, "assembly"))
     with pytest.raises(RuleError, match="watermarked"):
         authorize(store, actor, pid, {"operation": "export", "version": draft["id"]})
-    authorize(store, actor, pid, {"operation": "assembly", "timeline": timeline})
+    client = TestClient(
+        create_app(
+            store.directory,
+            {"a" * 32: actor, "b" * 32: "another-operator"},
+            worker_enabled=False,
+            allowed_hosts=("testserver",),
+        )
+    )
+    auth = {"Authorization": "Bearer " + "a" * 32}
+    other = {"Authorization": "Bearer " + "b" * 32}
+    path = f"/api/projects/{pid}"
+    timeline_url = path + "/timeline"
+    creation = {**auth, "If-None-Match": "*"}
+    first = client.put(timeline_url, headers=creation, json=timeline)
+    assert first.status_code == 200
+    assert (
+        client.put(timeline_url, headers=creation, json=timeline).json()["id"]
+        == first.json()["id"]
+    )
+    assert client.get(timeline_url, headers=other).status_code == 404
+    old_quote = store.quote(
+        actor,
+        pid,
+        [
+            m.RequestJob(operation="assembly", version=first.json()["id"]),
+        ],
+    )
+    corrected = dict(
+        timeline,
+        clips=[
+            dict(timeline["clips"][0], captions={"pt-BR": "Hipótese revisada."}),
+        ],
+    )
+    original = {**auth, "If-Match": first.headers["ETag"]}
+    saved = client.put(timeline_url, headers=original, json=corrected)
+    assert saved.status_code == 200
+    revision = saved.json()["id"]
+    assert client.put(timeline_url, headers=original, json=timeline).status_code == 412
+    assert (
+        client.get(timeline_url, headers=auth).headers["ETag"] == saved.headers["ETag"]
+    )
+    historical = client.get(
+        timeline_url, headers=auth, params={"revision": first.json()["id"]}
+    )
+    assert "captions" not in historical.json()["data"]["clips"][0]
+    with pytest.raises(RuleError, match="Timeline changed"):
+        store.authorize(actor, pid, old_quote["id"], 0)
+    quote = store.quote(
+        actor, pid, [m.RequestJob(operation="assembly", version=revision)]
+    )
+    assert quote["total"] == 0
+    jobs = store.authorize(actor, pid, quote["id"], 0)
+    assert store.authorize(actor, pid, quote["id"], 0) == jobs
     assert worker.step()
     assembly = head(store, pid, "assembly")
+    assert assembly["data"]["timeline_revision"] == revision
     with pytest.raises(RuleError, match="assembly approval"):
         authorize(store, actor, pid, {"operation": "export", "version": assembly["id"]})
     review(store, actor, pid, assembly)
     authorize(store, actor, pid, {"operation": "export", "version": assembly["id"]})
     assert worker.step()
     output = head(store, pid, "export")
+    assert output["data"]["timeline_revision"] == revision
     assert output["data"]["retention"] == [
         {
             "scene": story["data"]["title"],
@@ -955,30 +1009,19 @@ def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
         assert (
             media.asset_path(worker.root, subtitles["media"])
             .read_text(encoding="utf-8")
-            .endswith("Uma hipótese.\n")
+            .endswith("Hipótese revisada.\n")
         )
-    client = TestClient(
-        create_app(
-            store.directory,
-            {"a" * 32: actor, "b" * 32: "another-operator"},
-            worker_enabled=False,
-            allowed_hosts=("testserver",),
-        )
+    assert (
+        head(store, pid, f"voice/{sid}/pt-BR")["data"]["narration"] == "Uma hipótese."
     )
-    track_url = f"/api/projects/{pid}/media/{subtitles['id']}?webvtt=true"
-    auth = {"Authorization": "Bearer " + "a" * 32}
+    track_url = path + f"/media/{subtitles['id']}?webvtt=true"
     track = client.get(track_url, headers=auth)
     assert track.status_code == 200
     assert track.headers["Content-Type"].startswith("text/vtt")
     assert track.text.startswith("WEBVTT\n\n1\n00:00:00.000 --> ")
-    assert track.text.endswith("Uma hipótese.\n")
+    assert track.text.endswith("Hipótese revisada.\n")
     assert client.get(track_url).status_code == 401
-    assert (
-        client.get(
-            track_url, headers={"Authorization": "Bearer " + "b" * 32}
-        ).status_code
-        == 404
-    )
+    assert client.get(track_url, headers=other).status_code == 404
     assert (
         client.get(
             f"/api/projects/{pid}/media/{output['id']}?webvtt=true", headers=auth
@@ -986,6 +1029,10 @@ def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
         == 404
     )
     file = media.asset_path(worker.root, output["media"])
+    assert (
+        file.read_bytes()
+        == media.asset_path(worker.root, assembly["media"]).read_bytes()
+    )
     with av.open(str(file)) as container:
         assert [stream.metadata["language"] for stream in container.streams.audio] == [
             "eng",
@@ -1000,6 +1047,28 @@ def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
         assert next(container.decode(video=0)).width == 1920
     restarted = Workbench(store.directory)
     assert restarted.snapshot(actor, pid)["export_status"] == "COMPLETED"
+    [queued] = authorize(
+        store, actor, pid, {"operation": "assembly", "version": revision}
+    )
+    assert (
+        client.put(
+            timeline_url,
+            headers={**auth, "If-Match": saved.headers["ETag"]},
+            json=timeline,
+        ).status_code
+        == 200
+    )
+    assert not worker.step()
+    assert (
+        next(job for job in store.snapshot(actor, pid)["jobs"] if job["id"] == queued)[
+            "status"
+        ]
+        == "CANCELLED"
+    )
+    assert (
+        client.get(path + f"/media/{output['id']}", headers=auth).content
+        == file.read_bytes()
+    )
 
 
 def test_runway_recovery_polls_saved_task_without_resubmission(sandbox, monkeypatch):

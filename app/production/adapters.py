@@ -309,6 +309,11 @@ class Local:
                     "watermark": payload["timeline"]["watermark"],
                     "metadata": payload["timeline"]["metadata"],
                     "retention": payload["timeline"].get("retention", []),
+                    **(
+                        {"timeline_revision": payload["timeline_revision"]}
+                        if "timeline_revision" in payload
+                        else {}
+                    ),
                 },
                 output,
                 captions,

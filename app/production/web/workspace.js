@@ -7,7 +7,7 @@ let projectId = entry.get("project") || sessionStorage.getItem("mpt-production-p
 let projects = [], project = null, loggedIn = false, page = entry.get("view") || "dashboard";
 let loginMethod = "token";
 let providerCurrency = null;
-let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null;
+let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null, timelineBase = null;
 let editing = false, polling = false;
 
 const tr = (en, pt) => locale === "pt" ? pt : en;
@@ -113,11 +113,11 @@ async function execute(action, control) {
   }
 }
 
-async function api(url, method = "GET", data) {
+async function api(url, method = "GET", data, headers = {}) {
   const raw = data instanceof File;
-  const options = {method, credentials: "same-origin"};
+  const options = {method, credentials: "same-origin", headers};
   if (data !== undefined) {
-    options.headers = {"Content-Type": raw ? "application/octet-stream" : "application/json"};
+    options.headers = {...headers, "Content-Type": raw ? "application/octet-stream" : "application/json"};
     options.body = raw ? data : JSON.stringify(data);
   }
   const response = await fetch(url, options);
@@ -128,7 +128,9 @@ async function api(url, method = "GET", data) {
   if (!response.ok) {
     let detail;
     try { detail = (await response.json()).detail; } catch { detail = null; }
-    throw new Error(detail || tr("Request failed", "A solicitação falhou"));
+    const error = new Error(detail || tr("Request failed", "A solicitação falhou"));
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -142,8 +144,12 @@ function modal(heading, content, controls = []) {
 }
 
 async function refresh(redraw = true) {
-  projects = await api("/api/projects");
-  project = projects.some(item => item.id === projectId) ? await api(path()) : null;
+  const target = projectId;
+  const list = await api("/api/projects");
+  const snapshot = list.some(item => item.id === target) ? await api("/api/projects/" + target) : null;
+  if (projectId !== target) return;
+  projects = list;
+  project = snapshot;
   if (redraw) render();
 }
 
@@ -852,6 +858,7 @@ function retentionPanel(assembly) {
 function timelineView() {
   let saved = current("timeline");
   if (!timelineDraft) {
+    timelineBase = saved?.id || null;
     const defaultClips = project.scenes.map(scene => ({scene, trim: 0, narration_offset: 0, transition: "cut"}));
     const existing = saved?.data;
     timelineDraft = existing && defaultClips.length === existing.clips.length &&
@@ -871,6 +878,7 @@ function timelineView() {
   const draftInfo = node("small", {role: "status"});
   const rendered = mediaPreview(assembly);
   const versions = new Map(project.versions.map(v => [v.id, v]));
+  const renderedRevision = versions.get(assembly?.data.timeline_revision);
   const chapters = (assembly?.data.retention || []).flatMap(entry => {
     const slot = versions.get(entry.video)?.slot;
     return slot?.startsWith("video/") ? [{...entry, sceneId: slot.slice(6)}] : [];
@@ -891,7 +899,9 @@ function timelineView() {
   }
 
   function refreshDraftInfo() {
-    draftInfo.textContent = saved && json(saved.data) === json(draft) ?
+    draftInfo.textContent = (saved?.id || null) !== timelineBase ?
+      tr("The saved timeline changed in another session.", "A linha do tempo salva mudou em outra sessão.") :
+      saved && json(saved.data) === json(draft) ?
       tr("Timeline saved · v", "Linha do tempo salva · v") + saved.seq :
       tr("Timeline draft · save to resume later", "Rascunho da linha do tempo · salve para retomar depois");
   }
@@ -926,6 +936,7 @@ function timelineView() {
       if (seekToScene) seek(media, clip?.trim || 0);
     } else {
       previewInfo.textContent = tr("Rendered assembly · v", "Montagem renderizada · v") + assembly.seq +
+        (renderedRevision ? tr(" · timeline v", " · linha do tempo v") + renderedRevision.seq : "") +
         (assembly.fresh ? "" : tr(" · inputs have changed", " · os insumos mudaram"));
       const chapter = chapters.find(item => item.sceneId === clip?.scene);
       if (seekToScene && chapter) seek(media, chapter.start);
@@ -935,6 +946,33 @@ function timelineView() {
     panel.replaceChildren(media || node("p", {class: "muted"},
       tr("Your preview will appear here.", "Sua prévia vai aparecer aqui.")));
     previewMedia = media;
+  }
+
+  function captionEditor(clip) {
+    const languages = project.data.languages;
+    const interfaceLanguage = locale === "pt" ? "pt-BR" : "en-US";
+    const language = select(languages.map(lang => [lang, lang]), languages.includes(interfaceLanguage) ?
+      interfaceLanguage : languages[0]);
+    const text = area("", {rows: 4, maxlength: 8000});
+    const narration = () => current("voice/" + clip.scene + "/" + language.value)?.data.narration || "";
+    const showText = () => { text.value = clip.captions?.[language.value] ?? narration(); };
+    language.addEventListener("change", showText);
+    text.addEventListener("input", () => {
+      const value = text.value.trim();
+      if (value && value !== narration()) {
+        clip.captions ??= {};
+        clip.captions[language.value] = value;
+      } else if (clip.captions) {
+        delete clip.captions[language.value];
+        if (!Object.keys(clip.captions).length) delete clip.captions;
+      }
+    });
+    showText();
+    return node("details", {}, node("summary", {}, tr("Scene captions", "Legenda da cena")),
+      stack(label(tr("Caption language", "Idioma da legenda"), language),
+        label(tr("Caption text", "Texto da legenda"), text),
+        small(tr("This text appears on the next render. The existing narration is reused.",
+          "O texto entra na próxima renderização. A narração existente será reutilizada."))));
   }
 
   function selectClip(index, seekToScene) {
@@ -1012,6 +1050,7 @@ function timelineView() {
         numeric("seconds", "Clip length (s)", "Duração do clipe (s)", true)),
       row(button(tr("Move earlier", "Mover antes"), () => swap(-1), false, selectedClip === 0),
         button(tr("Move later", "Mover depois"), () => swap(1), false, selectedClip >= draft.clips.length - 1)),
+      captionEditor(clip),
       node("details", {}, node("summary", {}, tr("Scene audio and transition", "Áudio e transição da cena")),
         stack(numeric("narration_offset", "Narration offset (s)", "Atraso da narração (s)"),
           label(tr("Transition", "Transição"), transition), label(tr("Sound effect", "Efeito sonoro"), effect))));
@@ -1071,8 +1110,39 @@ function timelineView() {
     output: ["Choose output languages", "Escolher idiomas da saída"],
   };
   const outputDetails = node("details", {}, node("summary", {}, tr("Output settings", "Configurações de saída")), output);
-  const renderButton = button(tr("Render preview", "Renderizar prévia"),
-    () => quote([{operation: "assembly", timeline: draft}]), true);
+  async function saveTimeline() {
+    const target = projectId;
+    const draftData = json(draft);
+    const headers = timelineBase ? {"If-Match": '"' + timelineBase + '"'} : {"If-None-Match": "*"};
+    let result;
+    try {
+      result = await api(path("/timeline"), "PUT", JSON.parse(draftData), headers);
+    } catch (error) {
+      if (error.status !== 412 || projectId !== target) throw error;
+      modal(tr("Timeline changed", "A linha do tempo mudou"),
+        node("p", {}, tr("Someone saved another revision. Load the latest timeline to continue, or close to keep reviewing your edits.",
+          "Outra revisão foi salva. Carregue a linha do tempo mais recente para continuar ou feche para conferir seus ajustes.")), [
+          button(tr("Load saved timeline", "Carregar versão salva"), async () => {
+            timelineDraft = null;
+            await refresh();
+            ui("dialog").close();
+          }),
+        ]);
+      return null;
+    }
+    if (projectId !== target || timelineDraft !== draft) return null;
+    saved = result;
+    timelineBase = result.id;
+    const unchanged = json(draft) === draftData;
+    if (unchanged) timelineDraft = structuredClone(result.data);
+    await refresh(unchanged);
+    if (!unchanged) refreshDraftInfo();
+    return projectId === target && unchanged ? result : null;
+  }
+  const renderButton = button(tr("Render preview", "Renderizar prévia"), async () => {
+    const revision = await saveTimeline();
+    if (revision) await quote([{operation: "assembly", version: revision.id}]);
+  }, true);
   const missingButton = button("", () => {
     const next = missingInput();
     if (next === "output") {
@@ -1082,16 +1152,7 @@ function timelineView() {
   }, true);
   const controls = row(
     button(tr("Save timeline", "Salvar linha do tempo"), async () => {
-      const target = projectId;
-      const draftData = json(draft);
-      const result = await api(path("/timeline"), "PUT", JSON.parse(draftData));
-      if (projectId !== target || timelineDraft !== draft) return;
-      saved = result;
-      const unchanged = json(draft) === draftData;
-      if (unchanged) timelineDraft = structuredClone(result.data);
-      await refresh(unchanged);
-      if (!unchanged) refreshDraftInfo();
-      notify(tr("Timeline saved", "Linha do tempo salva"));
+      if (await saveTimeline()) notify(tr("Timeline saved", "Linha do tempo salva"));
     }, false, !draft.clips.length),
     missingButton, renderButton, activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
   const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
@@ -1101,7 +1162,8 @@ function timelineView() {
       row(node("a", {href: assembly.url + "?attachment=true"}, tr("Download assembly", "Baixar montagem")),
         !exported?.fresh && !assembly.data.watermark && button(tr("Prepare approved export", "Preparar exportação aprovada"),
           () => quote([{operation: "export", version: assembly.id}]), true, !ready(assembly))),
-      exported && exported.fresh && row(node("a", {href: exported.url + "?attachment=true"}, tr("Download final MP4", "Baixar MP4 final")),
+      exported && row(node("a", {href: exported.url + "?attachment=true"}, exported.fresh ?
+        tr("Download final MP4", "Baixar MP4 final") : tr("Download previous MP4", "Baixar MP4 anterior")),
         ...Object.entries(exported.data.captions || {}).map(([lang, id]) => node("a",
           {href: path("/media/" + id + "?attachment=true")}, lang + " · SRT"))),
       revisions("assembly"), exported && revisions("export")), outputDetails,

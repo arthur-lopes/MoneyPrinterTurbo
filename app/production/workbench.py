@@ -7,7 +7,7 @@ import time
 from uuid import uuid4
 
 from . import codex_cli, credentials, scene_motion
-from .models import GRAPHIC_MODES, HYPERFRAMES_MODES, check_cue_window
+from .models import GRAPHIC_MODES, HYPERFRAMES_MODES, Timeline, check_cue_window
 from .store import ACTIVE, SCENE_OPERATIONS, RuleError, Store, encode, unpack
 
 
@@ -322,9 +322,10 @@ class Workbench(Store):
             raise RuleError("An animation is only used for video", 422)
         if request.sources and kind != "research":
             raise RuleError("Sources are only accepted for research", 422)
-        if request.version and kind not in {"script", "export"}:
+        if request.version and kind not in {"script", "assembly", "export"}:
             raise RuleError(
-                "A version override is only used for script revision or export", 422
+                "A version override is used for script revision, assembly or export",
+                422,
             )
         if sid:
             if sid not in self.order(db, pid):
@@ -414,9 +415,21 @@ class Workbench(Store):
                 deps.append({"id": translation["id"]})
                 payload["narration"] = translation["data"]["narration"]
         if kind == "assembly":
-            payload["timeline"] = self._timeline(
-                db, pid, context, request.timeline, deps
-            )
+            timeline = request.timeline
+            if request.version:
+                if timeline is not None:
+                    raise RuleError(
+                        "Choose either a saved timeline or an inline timeline", 422
+                    )
+                revision = self.head(db, pid, "timeline")
+                if not revision or revision["id"] != request.version:
+                    raise RuleError(
+                        "Timeline changed. Reload the saved revision before rendering."
+                    )
+                deps.append({"timeline_revision": revision["id"]})
+                payload["timeline_revision"] = revision["id"]
+                timeline = Timeline.model_validate(revision["data"])
+            payload["timeline"] = self._timeline(db, pid, context, timeline, deps)
         if kind == "export":
             assembly = self.require(db, pid, "assembly")
             if assembly["id"] != request.version:

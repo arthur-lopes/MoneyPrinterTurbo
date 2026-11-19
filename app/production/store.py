@@ -179,6 +179,11 @@ class Store:
 
     def _dependencies_current(self, db, pid, dependencies, visited=None):
         for dep in dependencies:
+            if "timeline_revision" in dep:
+                timeline = self.head(db, pid, "timeline")
+                if not timeline or timeline["id"] != dep["timeline_revision"]:
+                    return False
+                continue
             if "sections" in dep:
                 script = self.head(db, pid, "script")
                 if (

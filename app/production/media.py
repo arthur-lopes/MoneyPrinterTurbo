@@ -387,11 +387,12 @@ def captions(path, timeline, language):
     elapsed, index = 0, 1
     blocks = []
     for clip in timeline["clips"]:
-        words = clip["audio"][language]["narration"].split()
+        voice = clip["audio"][language]
+        words = clip.get("captions", {}).get(language, voice["narration"]).split()
         lines = textwrap.wrap(" ".join(words), width=66)
         if lines:
             start = elapsed + clip["narration_offset"]
-            span = clip["audio"][language]["seconds"] / len(lines)
+            span = voice["seconds"] / len(lines)
             for line in lines:
                 blocks.append(
                     f"{index}\n{timestamp(start)} --> {timestamp(start + span)}\n{line}\n"

@@ -266,6 +266,9 @@ class Clip(Input):
     narration_offset: float = Field(default=0, ge=0, le=120)
     effect: Id | None = None
     transition: Literal["cut", "fade"] = "cut"
+    captions: dict[Language, Text] = Field(
+        default_factory=dict, exclude_if=lambda captions: not captions
+    )
 
 
 class Timeline(Input):
