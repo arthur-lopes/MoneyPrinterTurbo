@@ -8,3 +8,5 @@
 6. Store language-specific narration, titles, descriptions and captions against shared visual assets.
 7. Assemble and preview versioned timelines with FFmpeg, then publish only an approved export snapshot.
 8. Verify workflow, security checks, restart recovery, renderer output and application startup. Documentation describes the delivered paths and remaining gaps.
+
+The workspace now runs from `mpt production`. The focused production tests and offline end-to-end run exercised the approval and export sequence, including both system narration languages. Paid integrations use documented contracts with mocked verification. [Test coverage](TESTING.md) · [Security scope](SECURITY.md)

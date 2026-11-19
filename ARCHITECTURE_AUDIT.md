@@ -21,6 +21,7 @@ Baseline `bdd8d32`, inspected 2026-11-19. Scope covers the local checkout and it
 | A03 | High financial impact | `app/controllers/v1/video.py:235` admits legacy generation tasks and `app/controllers/v1/llm.py` admits script operations without a persisted spending authorization tied to immutable inputs. There is no shared atomic budget guarantee across the legacy launchers. |
 | A04 | Medium in shared deployments | Legacy auth uses one shared key. Task operations and artifact reads have no principal-specific project ownership boundary. The new workspace needs explicit owner checks and its own authentication. |
 | A05 | Positive control | The prepared renderer passes argument arrays and inserts `-protocol_whitelist file,pipe` at its FFmpeg input boundaries (`app/services/video_project.py:496`). `app/utils/file_security.py` provides a resolved-path containment check and legacy media controllers validate upload filenames. No shell command injection was confirmed in the reviewed render path. |
+| A06 | Advisory severity varies | The baseline PyPI scan identified advisories in four pinned packages. Their versions were updated, and the follow-up scan found no known advisories for the default Windows runtime export. Application reachability of each advisory was not evaluated. [Follow-up scan](SECURITY.md#baseline-scan-and-residual-issues) |
 
 ## Open audit items
 

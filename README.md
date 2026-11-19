@@ -18,6 +18,27 @@
 
 </div>
 
+## Supervised production workspace
+
+Create a documentary project, review research and script revisions, approve storyboard frames, authorize a spending maximum, and assemble approved clips into a bilingual MP4. The production workspace runs locally alongside the existing MoneyPrinterTurbo tools.
+
+```powershell
+uv sync --frozen
+$env:MPT_PRODUCTION_ACCESS_TOKEN = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+uv run --no-sync mpt production
+```
+
+Open [the local production workspace](http://127.0.0.1:8765) and sign in with the generated token. The same token can be read in the terminal session that started the app. Data persists in `storage/production`. Use `--data-dir` to choose another local directory.
+
+1. Create a project, add sources, then generate or edit and approve research and script.
+2. Build the storyboard, approve scenes and their reference images, and confirm the estimate for clip generation.
+3. Review clips, approve translations and narration, and save the timeline.
+4. Render a review copy and approve an unwatermarked assembly before exporting the final MP4 and its language-specific SRT files.
+
+Local previews and motion clips work offline. Narration can use installed Windows voices, eSpeak NG, or reviewed audio imports. For AI-assisted text, stills, and narration, set `MPT_PRODUCTION_OPENAI_KEY`. For Runway Gen-4 Turbo video, set `MPT_PRODUCTION_RUNWAY_KEY`. Enable the operation and configure a rate ceiling in **Providers** and a project limit in **Cost analytics**. Keep account-level spending limits in the provider dashboard. Runway output from an additional verified CDN host requires `MPT_PRODUCTION_RUNWAY_OUTPUT_HOSTS`. [OpenAI image API](https://developers.openai.com/api/docs/guides/image-generation), [Runway API pricing](https://docs.dev.runwayml.com/guides/pricing/)
+
+See the [product requirements](PRD.md), [architecture](ARCHITECTURE.md), [API](API_DOCUMENTATION.md), [security scope](SECURITY.md), and [tests](TESTING.md).
+
 ## 界面预览 🖥️
 
 <h4 align="center">WebUI</h4>
