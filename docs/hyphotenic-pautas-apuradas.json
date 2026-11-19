@@ -1,0 +1,202 @@
+[
+  {
+    "id": "E02",
+    "title": "How Tonga's Tsunami Got a Head Start",
+    "opening_hook": "After Tonga's eruption, the sea rose at some gauges more than two hours ahead of a conventional travel-time estimate. What got there first?",
+    "premise": "On January 15, 2022, Hunga Tonga–Hunga Haʻapai produced an ocean signal that arrived earlier than expected at some instruments. Comparing pressure records and ocean measurements pointed to a moving source in the atmosphere.",
+    "target_duration_seconds": 64,
+    "thumbnail_text": "TWO HOURS EARLY",
+    "story_beats": [
+      "Put a conventional travel-time estimate next to the early measured signal.",
+      "Line up the pressure pulse and the early ocean signal on the same clock.",
+      "Show how a moving pulse of air pressure generates a response in the water along its path.",
+      "Separate the leading signal from the later tsunami waves."
+    ],
+    "visual_plan": "Open on a two-track timing comparison. Draw a pressure front over a still ocean cross-section while the water response develops beneath it. Label conceptual diagrams as illustrations.",
+    "fact_check": "Limit the timing claim to early arrivals at some gauges, relative to a conventional travel-time model from the volcano. Attribute the mechanism to the studies and separate later waves.",
+    "evidence": {
+      "question": "How could the first ocean signal from Tonga beat the predicted travel time?",
+      "finding": "Ocean sensors detected an early signal timed with a traveling pressure wave. The researchers reproduced the leading signal by modeling how the atmospheric pressure wave forced the sea surface as it passed.",
+      "angle": "Tell the story through the two instruments and the timing mismatch, with the moving source as the reveal.",
+      "uncertainty": "The first, pressure-driven signal and the subsequent waves have different dynamics. The timing comparison is to a conventional model for this eruption.",
+      "sources": [
+        {
+          "title": "Kubota et al. · Science, 2022",
+          "url": "https://www.eri.u-tokyo.ac.jp/people/kimi/pdfs/Kubota_Science_2022.pdf",
+          "excerpt": "The study reports coastal tsunami observations more than two hours before the theoretical travel time for a conventional wave from the volcano. Ocean-bottom gauges detected initial signals at Lamb-wave arrival. Simulations reproduced the leading sea-surface rise as forced by moving atmospheric pressure."
+        },
+        {
+          "title": "Omira et al. · Nature, 2022",
+          "url": "https://www.nature.com/articles/s41586-022-04926-4",
+          "excerpt": "The first sea-level fluctuations at multiple locations coincided with the arrival of the atmospheric wave. The authors combined measurements with a moving atmospheric forcing model for the tsunami."
+        }
+      ],
+      "claims": [
+        {"text": "Some early tsunami arrivals in the January 2022 Tonga case preceded the predicted travel time for conventional waves from the volcano by more than two hours.", "category": "verified", "sources": [1]},
+        {"text": "Researchers found that the early ocean signal coincided with arrival of the atmospheric pressure wave and reproduced the leading sea-surface signal in simulations with moving atmospheric forcing.", "category": "verified", "sources": [1, 2]},
+        {"text": "The studies distinguish the early pressure-driven signal from subsequent tsunami waves that can arrive later.", "category": "verified", "sources": [1, 2]}
+      ]
+    }
+  },
+  {
+    "id": "E01",
+    "title": "The Sky Powered a Telegraph. Then It Shut Down Québec.",
+    "opening_hook": "In 1859, two telegraph operators cut their batteries and kept sending messages. More than a century later, the same kind of disturbance shut down Québec's grid.",
+    "premise": "Compare a documented 1859 telegram exchange between Boston and Portland with the separate 1989 Hydro-Québec blackout. Both reveal what happens when a geomagnetic storm drives unexpected current in long conductors.",
+    "target_duration_seconds": 66,
+    "thumbnail_text": "BATTERIES OFF",
+    "story_beats": [
+      "Show the account of the telegraph operators taking their batteries off the line.",
+      "Explain how a changing magnetic field can drive unwanted current in a long conductor.",
+      "Jump to Québec in 1989 and time the chain of grid disturbances.",
+      "Resolve why the same broad physical mechanism produced very different outcomes."
+    ],
+    "visual_plan": "Start with a labeled reconstruction of a telegraph battery disconnect. Introduce the historical record, then compare a telegraph line with an abstract power grid. Use the clock for the documented disturbance sequence.",
+    "fact_check": "Use 92 seconds for the grid disturbance sequence described by the report. Treat 1859 and 1989 as separate storms. Identify the key sending demonstration as an account by Prescott.",
+    "evidence": {
+      "question": "How did a geomagnetic storm help send messages in one system and shut down another?",
+      "finding": "The reported 1859 telegraph exchange used current induced on its wire. In 1989, induced currents and grid equipment responses contributed to a rapid collapse in Québec.",
+      "angle": "Connect two archival cases through the behavior of a long wire, with the difference between helpful and unwanted current as the payoff.",
+      "uncertainty": "The historical account describes one exchange. The 92 seconds refer to the sequence of grid disturbances in the technical report.",
+      "sources": [
+        {
+          "title": "G. B. Prescott · Account of the 1859 aurora",
+          "url": "https://ajsonline.org/api/v1/articles/66165-the-great-auroral-exhibition-of-august-28th-to-september-4th-1859.pdf",
+          "excerpt": "Prescott recounts Boston and Portland operators working their telegraph line after disconnecting their batteries during the September 1859 aurora."
+        },
+        {
+          "title": "NERC and U.S. DOE · High-Impact, Low-Frequency Event Risk Report",
+          "url": "https://www.energy.gov/sites/prod/files/High-Impact%20Low-Frequency%20Event%20Risk%20to%20the%20North%20American%20Bulk%20Power%20System%20-%202010.pdf",
+          "excerpt": "The report describes a chain of disturbances in March 1989 that led to collapse of the Québec interconnection 92 seconds later. It cites Denis Larose's account of the incident."
+        },
+        {
+          "title": "U.S. GAO · Protecting the Electric Grid from Geomagnetic Disturbances",
+          "url": "https://www.gao.gov/assets/gao-19-98.pdf",
+          "excerpt": "The technical assessment explains how geomagnetic disturbances can drive currents in long lines and affect equipment. It documents the Hydro-Québec incident and earlier telegraph effects."
+        }
+      ],
+      "claims": [
+        {"text": "Prescott reports Boston and Portland operators continuing to communicate after taking their batteries off the circuit during the September 1859 storm.", "category": "verified", "sources": [1]},
+        {"text": "Geomagnetic disturbances can drive currents in long conductors that affect electrical equipment.", "category": "verified", "sources": [3]},
+        {"text": "The Québec interconnection collapsed 92 seconds into a chain of power-system disturbances in March 1989, according to the NERC and DOE report.", "category": "verified", "sources": [2]}
+      ]
+    }
+  },
+  {
+    "id": "E03",
+    "title": "A Signal Every 44 Minutes. Then Astronomers Saw X-Rays.",
+    "opening_hook": "A telescope picked up a recurring radio signal roughly every 44 minutes. Another instrument saw a matching rhythm in X-rays. What kind of object could do that?",
+    "premise": "In 2025, researchers reported matching 44.2-minute radio and X-ray periods in ASKAP J1832−0911. A 2026 follow-up used new radio observations to test a model involving two stars in a close system.",
+    "target_duration_seconds": 64,
+    "thumbnail_text": "EVERY 44 MINUTES",
+    "story_beats": [
+      "Line up the two measured rhythms on a schematic timeline.",
+      "Explain that the X-ray detection gives researchers an extra constraint on the source.",
+      "Introduce the close-binary interpretation as a model from the 2026 study.",
+      "Close with an observation that could strengthen or weaken the interpretation."
+    ],
+    "visual_plan": "Use aligned, labeled radio and X-ray timelines. Distinguish measured results from an artist's rendering of a possible binary system.",
+    "fact_check": "Use 44.2 minutes for the reported period in the discovery. Attribute the binary interpretation and its prediction to the follow-up authors.",
+    "evidence": {
+      "question": "Why did matching X-ray and radio rhythms matter for a source that repeats every 44 minutes?",
+      "finding": "The same period in two kinds of radiation gives models another observation to explain. A later study found that a close-binary model could explain several details and proposed a future test.",
+      "angle": "Focus on how a second instrument changes the investigation, then contrast what the data measured with what a proposed model predicts.",
+      "uncertainty": "The binary interpretation is a candidate explanation. The later authors identify observations that could strengthen or weaken it.",
+      "sources": [
+        {
+          "title": "Wang et al. · Nature, 2025",
+          "url": "https://www.nature.com/articles/s41586-025-09077-w",
+          "excerpt": "The discovery reports coincident radio and X-ray emission from ASKAP J1832−0911 with a 44.2-minute period."
+        },
+        {
+          "title": "Chandra X-ray Observatory · Discovery summary",
+          "url": "https://chandra.si.edu/photo/2025/lprt/",
+          "excerpt": "Chandra and ASKAP data show that the source varies in X-rays and radio on the same roughly 44-minute period."
+        },
+        {
+          "title": "Horváth et al. · Publications of the Astronomical Society of Australia, 2026",
+          "url": "https://doi.org/10.1017/pasa.2026.10220",
+          "excerpt": "The follow-up uses radio pulse evolution and polarization data to assess a close-binary model. The paper proposes rebrightening by July 2027 as a testable prediction."
+        }
+      ],
+      "claims": [
+        {"text": "The 2025 discovery reports coincident radio and X-ray emission with a period of 44.2 minutes.", "category": "verified", "sources": [1, 2]},
+        {"text": "A close binary is an interpretation proposed and tested against multiple observed properties in a 2026 study.", "category": "uncertain", "sources": [3]},
+        {"text": "The 2026 study proposes possible rebrightening by July 2027 as a test of its interpretation.", "category": "verified", "sources": [3]}
+      ]
+    }
+  },
+  {
+    "id": "E05",
+    "title": "The 25.6-Meter Wave Scientists Put in a Tank",
+    "opening_hook": "A sensor in the North Sea measured a wave 25.6 meters high. Years later, scientists tried to reproduce its shape in a wave tank.",
+    "premise": "A 1995 measurement at Draupner captured the height and profile of a remarkable wave. Later researchers reproduced a similar wave in a tank using crossing wave groups, a condition the field measurement alone could not specify.",
+    "target_duration_seconds": 64,
+    "thumbnail_text": "25.6 METERS",
+    "story_beats": [
+      "Show the measured wave as a trace and define height from trough to crest.",
+      "Explain what a single sensor could measure and which direction information stayed uncertain.",
+      "Show crossing wave groups in the laboratory and compare the resulting profile.",
+      "End with the difference between reproducing a wave and identifying its exact history."
+    ],
+    "visual_plan": "Animate the height on a single trace. Show two waves in a labeled conceptual tank diagram. Use a measured trace or licensed material for real evidence, with a sourced scale.",
+    "fact_check": "Keep crest-to-trough height distinct from height above mean sea level. The laboratory recreation supports a plausible mechanism, with field geometry still inferred.",
+    "evidence": {
+      "question": "What did the tank reveal about an ocean wave that one field sensor had measured?",
+      "finding": "Crossing groups in the laboratory reproduced an unusually tall profile comparable to Draupner's measured wave. Reproducing the profile shows a plausible mechanism for waves of this kind.",
+      "angle": "Make the episode about the difference between having a measurement and being able to reproduce it.",
+      "uncertainty": "The precise directions of the historical wave groups were inferred. The laboratory angle is a condition of the recreation.",
+      "sources": [
+        {
+          "title": "Adcock et al. · Was Draupner a crossing sea?",
+          "url": "https://openaccess.city.ac.uk/id/eprint/4319/6/PRSDraupner2.pdf",
+          "excerpt": "The study analyzes the Draupner field record taken on January 1, 1995. It reports a 25.6 m wave and evaluates whether crossing groups could have produced the profile."
+        },
+        {
+          "title": "McAllister et al. · Laboratory recreation of Draupner",
+          "url": "https://ora.ox.ac.uk/objects/uuid%3Af2f2878b-80bc-4290-a51a-a91ac4f0b012",
+          "excerpt": "Tank experiments reproduced the Draupner waveform in a crossing-wave setup. The field time series alone cannot provide the directions used in the experiment."
+        }
+      ],
+      "claims": [
+        {"text": "A wave recorded at Draupner on January 1, 1995 measured 25.6 meters from trough to crest.", "category": "verified", "sources": [1, 2]},
+        {"text": "Researchers produced a similar wave in a tank using crossing wave groups and assessed the role of wave breaking.", "category": "verified", "sources": [2]},
+        {"text": "The exact directional crossing geometry in the historical event is an inference from the field record and modeling.", "category": "uncertain", "sources": [1, 2]}
+      ]
+    }
+  },
+  {
+    "id": "E04",
+    "title": "The Bloop: The Clue Hidden in a Second Recording",
+    "opening_hook": "A strange ocean sound went public. NOAA had a better clue than how it sounded: another recording whose pattern looked almost the same.",
+    "premise": "NOAA compared a sound recorded in 1997 with later icequake spectrograms. Put the signals next to each other and show why similar patterns make a stronger case for cracking ice than speculative interpretations of the sped-up sound.",
+    "target_duration_seconds": 60,
+    "thumbnail_text": "COMPARE THE SOUND",
+    "story_beats": [
+      "Introduce the 1997 recording and label the playback speed of NOAA's clip.",
+      "Explain that a spectrogram shows frequency as it changes over time.",
+      "Compare the original recording pattern with later icequakes from the Scotia Sea.",
+      "Resolve the case with the independent observations of iceberg breakup."
+    ],
+    "visual_plan": "Use two labeled spectrograms with comparable axes. Use NOAA's linked audio with attribution after verifying usage terms and state any playback speed on screen.",
+    "fact_check": "NOAA reports that the 1997 signal is consistent with icequakes. The 2008 tracked iceberg is a later comparison. Label the 16× sample as sped-up playback.",
+    "evidence": {
+      "question": "How did researchers identify an unusual ocean sound by comparing it with a second recording?",
+      "finding": "NOAA found spectrograms of icequakes that resembled the 1997 recording. The later observations could also track a known iceberg breaking apart, giving the acoustic signature an independent context.",
+      "angle": "Let the audience compare two signals for themselves and show the difference between hearing a sound and matching its frequency pattern.",
+      "uncertainty": "NOAA describes the old recording as consistent with icequakes. The later tracked iceberg provides comparison data for the attribution.",
+      "sources": [
+        {
+          "title": "NOAA PMEL · Icequakes and the Bloop",
+          "url": "https://www.pmel.noaa.gov/acoustics/sounds/bloop.html",
+          "excerpt": "NOAA compares the 1997 Bloop with similar spectrograms recorded during iceberg fracturing. It reports acoustically tracking iceberg A53a as it disintegrated in 2008. NOAA labels the original Bloop playback as sped up 16 times."
+        }
+      ],
+      "claims": [
+        {"text": "NOAA describes the 1997 signal as consistent with sounds generated by iceberg cracking and compares it with similar later recordings.", "category": "verified", "sources": [1]},
+        {"text": "NOAA used icequake sounds to track iceberg A53a as it disintegrated in early 2008.", "category": "verified", "sources": [1]},
+        {"text": "The NOAA audio sample labeled Bloop plays at 16 times the original signal's speed.", "category": "verified", "sources": [1]}
+      ]
+    }
+  }
+]

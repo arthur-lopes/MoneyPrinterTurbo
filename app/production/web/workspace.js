@@ -250,6 +250,17 @@ function loginView() {
     node("button", {class: "primary", type: "submit"}, tr("Sign in", "Entrar")))));
 }
 
+function evidenceBrief(evidence, includeSources = false) {
+  return stack(
+    node("p", {}, node("strong", {}, evidence.question)),
+    node("p", {}, evidence.finding),
+    small(evidence.angle),
+    small(tr("Evidence limit · ", "Limite da evidência · ") + evidence.uncertainty),
+    includeSources && row(...evidence.sources.map(source => node("a", {
+      href: source.url, target: "_blank", rel: "noopener noreferrer",
+    }, source.title))));
+}
+
 async function catalogView() {
   const {catalog, projects: linked} = await api("/api/catalog");
   const importFiles = () => {
@@ -276,26 +287,35 @@ async function catalogView() {
     button(tr("Import files", "Importar arquivos"), importFiles));
   if (!catalog) return stack(heading);
   const episodes = new Map(catalog.episodes.map(item => [item.id, item]));
-  const rounds = catalog.publishing_rounds.map((group, index) =>
-    card(node("h2", {}, tr("Round", "Rodada") + " " + (index + 1)), ...group.map(id => {
-      const item = episodes.get(id);
-      return node("details", {}, node("summary", {}, id + " · " + item.title),
-        stack(small(item.series + " · " + item.aspect_ratio + " · " + formatDuration(item.target_duration_seconds)),
-          node("p", {}, item.opening_hook), node("p", {}, item.premise),
-          node("ol", {}, item.story_beats.map(beat => node("li", {}, beat))),
-          node("p", {}, item.visual_plan), node("p", {}, item.fact_check),
-          node("p", {}, tr("Thumbnail", "Miniatura") + " · " + item.thumbnail_text),
-          node("a", {href: item.research_start.url, target: "_blank", rel: "noopener noreferrer"}, item.research_start.label),
-          row(button(tr("Draft prompt", "Prompt de rascunho"), () => {
-            modal(tr("Draft prompt", "Prompt de rascunho"), area(item.draft_prompt, {readonly: true, rows: 14}));
-          }), button(linked[id] ? tr("Open project", "Abrir projeto") : tr("Create project", "Criar projeto"),
-            () => linked[id] ? changeProject(linked[id]) : createEditorialProject(item), true))));
-    })));
+  const featured = new Set(catalog.featured || []);
+  const episodeDetails = id => {
+    const item = episodes.get(id);
+    return node("details", {}, node("summary", {}, id + " · " + item.title),
+      stack(small(item.series + " · " + item.aspect_ratio + " · " + formatDuration(item.target_duration_seconds)),
+        node("p", {}, item.opening_hook), node("p", {}, item.premise),
+        item.evidence && evidenceBrief(item.evidence, true),
+        node("ol", {}, item.story_beats.map(beat => node("li", {}, beat))),
+        node("p", {}, item.visual_plan), node("p", {}, item.fact_check),
+        node("p", {}, tr("Thumbnail", "Miniatura") + " · " + item.thumbnail_text),
+        !item.evidence && node("a", {href: item.research_start.url, target: "_blank", rel: "noopener noreferrer"}, item.research_start.label),
+        row(button(tr("Draft prompt", "Prompt de rascunho"), () => {
+          modal(tr("Draft prompt", "Prompt de rascunho"), area(item.draft_prompt, {readonly: true, rows: 14}));
+        }), button(linked[id] ? tr("Open project", "Abrir projeto") : tr("Create project", "Criar projeto"),
+          () => linked[id] ? changeProject(linked[id]) : createEditorialProject(item), true))));
+  };
+  const rounds = catalog.publishing_rounds.flatMap((group, index) => {
+    const previous = group.filter(id => !featured.has(id));
+    return previous.length ? [card(node("h2", {}, tr("Round", "Rodada") + " " + (index + 1)),
+      ...previous.map(episodeDetails))] : [];
+  });
   return stack(heading, card(node("h2", {}, catalog.channel), node("p", {}, catalog.slogan),
     row(...[["catalog", tr("Catalog JSON", "Catálogo JSON")], ["prompts", "Prompts"],
       ["plan", tr("Editorial plan", "Plano editorial")]].map(([name, text]) =>
       node("a", {href: "/api/catalog/files/" + name, download: true}, text)))),
-  ...rounds);
+    featured.size > 0 && card(node("h2", {}, tr("Evidence-backed priorities", "Pautas priorizadas com fontes")),
+      ...[...featured].map(episodeDetails)),
+    ...(featured.size && rounds.length ? [node("details", {}, node("summary", {},
+      tr("Previous editorial catalog", "Catálogo editorial anterior")), stack(...rounds))] : rounds));
 }
 
 function formatDuration(seconds) {
@@ -357,6 +377,7 @@ function dashboard() {
     node("p", {}, d.topic), small([d.audience, d.languages.join(", "), d.duration + " s"].join(" · ")),
     d.editorial && card(node("h2", {}, d.editorial.id + " · " + d.editorial.series),
       node("p", {}, d.editorial.opening_hook), node("p", {}, d.editorial.visual_plan),
+      d.editorial.evidence && evidenceBrief(d.editorial.evidence),
       node("p", {}, d.editorial.fact_check),
       node("a", {href: d.editorial.research_start.url, target: "_blank", rel: "noopener noreferrer"},
         d.editorial.research_start.label)),

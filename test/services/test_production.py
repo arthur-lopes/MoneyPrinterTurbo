@@ -186,6 +186,60 @@ def test_editorial_files_are_private_and_create_idempotent_draft_projects(tmp_pa
         assert project["data"]["style"]["aspect"] == "9:16"
         assert project["data"]["defaults"]["translation"] == "codex"
 
+        source = {
+            "title": "Experiment",
+            "url": "https://example.org/study",
+            "excerpt": "Two readings matched.",
+        }
+        referenced = dict(
+            episode,
+            id="E02",
+            order_in_round=2,
+            title="The early signal",
+            evidence={
+                "question": "Why was the signal early?",
+                "finding": "The readings matched.",
+                "angle": "Follow the two instruments.",
+                "uncertainty": "The mechanism was modeled.",
+                "sources": [source],
+                "claims": [
+                    {
+                        "category": "verified",
+                        "text": "Two readings matched.",
+                        "sources": [1],
+                    }
+                ],
+            },
+        )
+        revised = dict(
+            catalog, publishing_rounds=[["W01", "E02"]], episodes=[episode, referenced]
+        )
+        invalid = dict(files, catalog=json.dumps(dict(revised, featured=["W01"])))
+        assert (
+            client.put("/api/catalog", json=invalid, headers=alice).status_code == 422
+        )
+        updated = dict(files, catalog=json.dumps(dict(revised, featured=["E02"])))
+        assert (
+            client.put("/api/catalog", json=updated, headers=alice).status_code == 200
+        )
+        assert client.post(route, headers=alice).json()["id"] == pid
+        route = "/api/catalog/episodes/E02/project"
+        pilot = client.post(route, json={"localize": True}, headers=alice).json()["id"]
+        assert client.post(route, headers=alice).json()["id"] == pilot
+        detail = client.get("/api/projects/" + pilot, headers=alice).json()
+        assert detail["data"]["languages"] == ["en-US", "pt-BR"]
+        assert (
+            detail["data"]["editorial"]["evidence"]["question"]
+            == "Why was the signal early?"
+        )
+        assert "sources" not in detail["data"]["editorial"]["evidence"]
+        (research,) = detail["versions"]
+        assert (
+            research["kind"] == "research" and research["status"] == "AWAITING_REVIEW"
+        )
+        assert research["data"]["sources"] == [source]
+        assert detail["jobs"] == []
+
 
 def test_thumbnail_drafts_bundle_and_owner_access(tmp_path):
     token, other_token = "a" * 32, "b" * 32

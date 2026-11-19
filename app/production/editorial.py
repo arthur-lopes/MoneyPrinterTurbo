@@ -26,6 +26,15 @@ class ResearchStart(m.Input):
         return m.Source.safe_url(url)
 
 
+class EvidenceBrief(m.Research):
+    question: m.Short
+    finding: m.Text
+    angle: m.Text
+    uncertainty: m.Text
+    sources: list[m.Source] = Field(min_length=1, max_length=8)
+    claims: list[m.Claim] = Field(min_length=1, max_length=16)
+
+
 class Episode(m.Input):
     id: EpisodeId
     series: m.Short
@@ -45,6 +54,7 @@ class Episode(m.Input):
     fact_check: m.Text
     research_start: ResearchStart
     draft_prompt: str = Field(min_length=1, max_length=12000)
+    evidence: EvidenceBrief | None = None
 
 
 class Catalog(m.Input):
@@ -56,6 +66,7 @@ class Catalog(m.Input):
     optional_localization: Literal["pt-BR"]
     publishing_rounds: list[list[EpisodeId]] = Field(min_length=1, max_length=100)
     episodes: list[Episode] = Field(min_length=1, max_length=100)
+    featured: list[EpisodeId] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
     def check_rounds(self):
@@ -73,6 +84,14 @@ class Catalog(m.Input):
             )
         ):
             raise ValueError("Publishing rounds must list every episode once in order")
+        evidence_ids = {episode.id for episode in self.episodes if episode.evidence}
+        if (
+            len(set(self.featured)) != len(self.featured)
+            or not set(self.featured) <= evidence_ids
+        ):
+            raise ValueError(
+                "Featured episodes must have distinct, evidence-backed proposals"
+            )
         return self
 
 
@@ -156,8 +175,17 @@ def create_project(store, actor, episode_id, options):
                     ),
                     currency="BRL",
                 ).model_dump()
-                project["editorial"] = episode.model_dump(exclude={"draft_prompt"})
+                project["editorial"] = episode.model_dump(
+                    exclude={"draft_prompt": True, "evidence": {"sources", "claims"}},
+                    exclude_none=True,
+                )
                 pid = store.insert_project(db, actor, project)
+                if episode.evidence:
+                    research = m.Research(
+                        sources=episode.evidence.sources,
+                        claims=episode.evidence.claims,
+                    )
+                    store.add(db, pid, "research", "research", research.model_dump())
                 db.execute(
                     "INSERT INTO editorial_projects VALUES(?,?,?)",
                     (actor, episode_id, pid),
