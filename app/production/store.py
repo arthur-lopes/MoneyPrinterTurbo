@@ -208,7 +208,11 @@ class Store:
         for dep in dependencies:
             if "timeline_revision" in dep:
                 timeline = self.head(db, pid, "timeline")
-                if not timeline or timeline["id"] != dep["timeline_revision"]:
+                if (
+                    not timeline
+                    or timeline["id"] != dep["timeline_revision"]
+                    or not self.fresh(db, timeline, visited)
+                ):
                     return False
                 continue
             if "sections" in dep:
@@ -315,35 +319,36 @@ class Store:
     def review(self, actor, pid, versions, request):
         with self.transaction() as db:
             self.project(db, actor, pid)
-            assets = [
-                self.asset(db, pid, version) for version in dict.fromkeys(versions)
-            ]
-            for asset in assets:
-                if asset["kind"] == "export":
-                    raise RuleError("Review the assembly to authorize an export")
-                if asset["status"] == "APPROVED":
-                    if request.status == "APPROVED":
-                        continue
-                    raise RuleError(
-                        "Approved versions are immutable. Create a new version to revise."
-                    )
-                if request.status == "APPROVED" and (
-                    self.head(db, pid, asset["slot"])["id"] != asset["id"]
-                    or not self.fresh(db, asset)
-                ):
-                    raise RuleError("Version has been superseded or its inputs changed")
-                if request.status == "APPROVED" and self.rough_cut_output(db, asset):
-                    approved_inputs = [
-                        {key: value for key, value in dep.items() if key != "draft"}
-                        for dep in asset["dependencies"]
-                    ]
-                    if not self._dependencies_current(db, pid, approved_inputs):
-                        raise RuleError("Approve the storyboard and source image first")
-                db.execute(
-                    "INSERT INTO reviews(version,actor,decision,comment,created) VALUES(?,?,?,?,?)",
-                    (asset["id"], actor, request.status, request.comment, time.time()),
+            return self._review(db, actor, pid, versions, request)
+
+    def _review(self, db, actor, pid, versions, request):
+        assets = [self.asset(db, pid, version) for version in dict.fromkeys(versions)]
+        for asset in assets:
+            if asset["kind"] == "export":
+                raise RuleError("Review the assembly to authorize an export")
+            if asset["status"] == "APPROVED":
+                if request.status == "APPROVED":
+                    continue
+                raise RuleError(
+                    "Approved versions are immutable. Create a new version to revise."
                 )
-            return [self.asset(db, pid, asset["id"]) for asset in assets]
+            if request.status == "APPROVED" and (
+                self.head(db, pid, asset["slot"])["id"] != asset["id"]
+                or not self.fresh(db, asset)
+            ):
+                raise RuleError("Version has been superseded or its inputs changed")
+            if request.status == "APPROVED" and self.rough_cut_output(db, asset):
+                approved_inputs = [
+                    {key: value for key, value in dep.items() if key != "draft"}
+                    for dep in asset["dependencies"]
+                ]
+                if not self._dependencies_current(db, pid, approved_inputs):
+                    raise RuleError("Approve the storyboard and source image first")
+            db.execute(
+                "INSERT INTO reviews(version,actor,decision,comment,created) VALUES(?,?,?,?,?)",
+                (asset["id"], actor, request.status, request.comment, time.time()),
+            )
+        return [self.asset(db, pid, asset["id"]) for asset in assets]
 
     def script(self, db, pid, data, research, job=None):
         section_data = m.Script.model_validate(data).model_dump(exclude_none=True)

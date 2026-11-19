@@ -1230,6 +1230,115 @@ def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
         .endswith("The initial signal.\n")
     )
 
+    app = create_app(
+        store.directory,
+        {"a" * 32: actor, "b" * 32: "another-owner"},
+        worker_enabled=False,
+    )
+    client = TestClient(
+        app,
+        base_url="http://127.0.0.1",
+        headers={"Authorization": "Bearer " + "a" * 32},
+    )
+    url = f"/api/projects/{pid}/delivery"
+    plan = client.get(url).json()
+    assert plan["revision"] == revision["id"]
+    [scene] = plan["scenes"]
+    assert [item["kind"] for item in scene["materials"]] == [
+        "scene",
+        "image",
+        "video",
+        "voice",
+    ]
+    preparation = {
+        "revision": plan["revision"],
+        "confirmed": True,
+        "versions": [item["id"] for item in scene["materials"]],
+    }
+    assert client.post(url + "/prepare", json=preparation).status_code == 409
+    assert (
+        client.get(url, headers={"Authorization": "Bearer " + "b" * 32}).status_code
+        == 404
+    )
+    selection = dict(preparation, scenes=[sid])
+    assert (
+        client.post(
+            url + "/materials",
+            json=dict(selection, versions=preparation["versions"][:-1]),
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            url + "/materials", json=dict(selection, revision=timeline["id"])
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            url + "/materials", json=dict(selection, confirmed=False)
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(url + "/materials", json=selection).json()["approved"]
+        == preparation["versions"]
+    )
+    assert client.post(url + "/materials", json=selection).json()["approved"] == []
+    approved = [
+        entry
+        for entry in store.snapshot(actor, pid)["reviews"]
+        if entry["version"] in preparation["versions"]
+    ]
+    assert len(approved) == 4 and all(
+        entry["actor"] == actor and revision["id"] in entry["comment"]
+        for entry in approved
+    )
+
+    response = client.post(url + "/prepare", json=preparation)
+    assert response.status_code == 200
+    final_timeline = response.json()
+    assert (
+        final_timeline["id"] != revision["id"]
+        and final_timeline["data"]["watermark"] is False
+    )
+    assert (
+        client.post(url + "/prepare", json=preparation).json()["id"]
+        == final_timeline["id"]
+    )
+    authorize(
+        store, actor, pid, {"operation": "assembly", "version": final_timeline["id"]}
+    )
+    assert worker.step()
+    final = head(store, pid, "assembly")
+    assert final["data"]["timeline_revision"] == final_timeline["id"]
+    with pytest.raises(RuleError, match="assembly approval"):
+        authorize(store, actor, pid, {"operation": "export", "version": final["id"]})
+    review(store, actor, pid, final)
+    authorize(store, actor, pid, {"operation": "export", "version": final["id"]})
+    assert worker.step()
+    exported = head(store, pid, "export")
+    assert media.asset_path(worker.root, exported["media"]).read_bytes() == (
+        media.asset_path(worker.root, final["media"]).read_bytes()
+    )
+    with store.transaction() as db:
+        previous_voice = store.head(db, pid, f"voice/{sid}/en-US")
+        store.add(
+            db,
+            pid,
+            previous_voice["slot"],
+            "voice",
+            previous_voice["data"],
+            media=previous_voice["media"],
+        )
+    with pytest.raises(RuleError, match="Timeline changed"):
+        authorize(
+            store,
+            actor,
+            pid,
+            {"operation": "assembly", "version": final_timeline["id"]},
+        )
+
 
 def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
     store, actor, pid = sandbox

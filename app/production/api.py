@@ -29,6 +29,7 @@ from . import (
     adapters,
     codex_cli,
     credentials,
+    delivery,
     editorial,
     media,
     thumbnails,
@@ -139,6 +140,7 @@ def create_app(
         )
     store = Workbench(Path(directory))
     project_agents = agent.AgentProjects(store)
+    deliveries = delivery.Delivery(store)
     worker = Worker(store)
     sessions = {}
     sessions_lock = Lock()
@@ -564,6 +566,22 @@ def create_app(
         if not 1 <= len(body.versions) <= 100:
             raise RuleError("Review 1 to 100 versions", 422)
         return store.review(actor, pid, body.versions, body)
+
+    @app.get("/api/projects/{pid}/delivery")
+    def delivery_review(pid: m.Id, actor=Depends(authenticated)):
+        return deliveries.snapshot(actor, pid)
+
+    @app.post("/api/projects/{pid}/delivery/materials")
+    def approve_delivery_materials(
+        pid: m.Id, body: delivery.MaterialReview, actor=Depends(authenticated)
+    ):
+        return deliveries.approve(actor, pid, body)
+
+    @app.post("/api/projects/{pid}/delivery/prepare")
+    def prepare_delivery(
+        pid: m.Id, body: delivery.Preparation, actor=Depends(authenticated)
+    ):
+        return deliveries.prepare(actor, pid, body)
 
     @app.get("/api/projects/{pid}/agent-access")
     def list_agent_access(pid: m.Id, actor=Depends(authenticated)):

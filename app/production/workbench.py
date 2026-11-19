@@ -189,19 +189,26 @@ class Workbench(Store):
             credential_revision=credentials.revision(key),
         )
 
-    def _timeline_input(self, db, pid, slot, watermark, version=None):
+    def _timeline_input(
+        self, db, pid, slot, watermark, version=None, *, for_review=False
+    ):
         asset = self.asset(db, pid, version) if version else self.head(db, pid, slot)
         draft = bool(
-            watermark
-            and asset
+            asset
             and asset["status"] == "AWAITING_REVIEW"
-            and self.rough_cut_output(db, asset)
+            and (for_review or (watermark and self.rough_cut_output(db, asset)))
         )
         if (
             not asset
             or asset["slot"] != slot
             or (asset["status"] != "APPROVED" and not draft)
             or not self.fresh(db, asset)
+            or (
+                draft
+                and for_review
+                and version
+                and self.head(db, pid, slot)["id"] != version
+            )
         ):
             raise RuleError(f"Current {slot.split('/')[0]} approval is required")
         dependency = {"id": asset["id"]}
@@ -209,7 +216,7 @@ class Workbench(Store):
             dependency["draft"] = True
         return asset, dependency
 
-    def _timeline(self, db, pid, project, timeline, deps):
+    def _timeline(self, db, pid, project, timeline, deps, *, for_review=False):
         if not timeline or not set(timeline.languages) <= set(project["languages"]):
             raise RuleError("Choose a timeline and project languages")
         order = self.order(db, pid)
@@ -225,10 +232,15 @@ class Workbench(Store):
         for clip in timeline.clips:
             sid = clip.scene
             scene, scene_dep = self._timeline_input(
-                db, pid, f"scene/{sid}", timeline.watermark
+                db, pid, f"scene/{sid}", timeline.watermark, for_review=for_review
             )
             video, video_dep = self._timeline_input(
-                db, pid, f"video/{sid}", timeline.watermark, clip.video
+                db,
+                pid,
+                f"video/{sid}",
+                timeline.watermark,
+                clip.video,
+                for_review=for_review,
             )
             if timeline.resolution == 2160 and (
                 video["data"].get("width", 0) < native_width
@@ -251,7 +263,11 @@ class Workbench(Store):
             )
             for language in timeline.languages:
                 voice, voice_dep = self._timeline_input(
-                    db, pid, f"voice/{sid}/{language}", timeline.watermark
+                    db,
+                    pid,
+                    f"voice/{sid}/{language}",
+                    timeline.watermark,
+                    for_review=for_review,
                 )
                 duration = voice["data"]["seconds"]
                 if duration + clip.narration_offset > seconds + 0.025:
@@ -460,7 +476,11 @@ class Workbench(Store):
                         "Choose either a saved timeline or an inline timeline", 422
                     )
                 revision = self.head(db, pid, "timeline")
-                if not revision or revision["id"] != request.version:
+                if (
+                    not revision
+                    or revision["id"] != request.version
+                    or not self.fresh(db, revision)
+                ):
                     raise RuleError(
                         "Timeline changed. Reload the saved revision before rendering."
                     )

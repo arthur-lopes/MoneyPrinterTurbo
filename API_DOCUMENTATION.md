@@ -22,6 +22,9 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | POST /api/projects/{project}/reviews | Record `versions`, `status` and optional `comment`. |
 | GET /api/projects/{project}/timeline | Read the current saved timeline, or pass `?revision=<id>` for an earlier revision. |
 | PUT /api/projects/{project}/timeline | Save an editing draft, including clips, languages and output options. Returns the saved revision and its `ETag`. |
+| GET /api/projects/{project}/delivery | Review the current saved cut, its scene timings, exact material versions and output settings. |
+| POST /api/projects/{project}/delivery/materials | Approve the materials of selected `scenes` with the saved `revision`, matching `versions` and `confirmed: true`. |
+| POST /api/projects/{project}/delivery/prepare | After material approval, save the unwatermarked cut with the same `revision`, all its material `versions` and `confirmed: true`. |
 | POST /api/projects/{project}/quotes | Estimate one or more operations in `jobs` without queuing them. |
 | POST /api/projects/{project}/quotes/{quote}/authorize | Confirm with `confirmed: true` and integer `maximum`. Repeating the same confirmation returns the same jobs. |
 | GET /api/projects/{project}/quotes/{quote} | Read the archived job inputs, estimate, and authorization decision. |
@@ -40,6 +43,8 @@ For the first edit in a project, quote `{"operation":"rough_cut","provider":"loc
 A script section can supply `evidence_graphic` with `layout` set to `sequence`, `alignment`, `coupling` or `routes`, exactly two `labels`, optional `annotation` and a `reveal_at` time in seconds within the section. The section must cite at least one entry in `sources`. First-cut rendering animates the highlight on a continuous shot and shows the source titles and an illustrative schematic label. See the [E02 diagram settings](docs/hyphotenic-e02-diagramas.json).
 
 Copy the current timeline's `ETag` into `If-Match` when saving, or pass `If-None-Match: *` when creating the first timeline. A conflicting write returns 412. Repeating a save with the same document returns its existing revision. When an assembly uses a saved timeline, the quote, assembly and export reference that revision. A new save supersedes older quotes and queued assemblies for that timeline. Earlier media remains available from its version URL.
+
+The delivery screen reviews the storyboard, reference frames, takes and narration for the selected cut. It records the operator and source cut in material approval events. Delivery preparation binds the reviewed inputs to its saved revision, so changed inputs require a new preparation before rendering. The owner quotes and authorizes the unwatermarked assembly, reviews its MP4, then authorizes the export of that approved version.
 
 For a subtitle-only correction, set the scene's `clips[].captions` entry to a map such as `{"pt-BR": "Texto corrigido."}`. The existing audio and scene timing are reused. Request `?webvtt=true` on a caption media URL to load the same cues in a browser.
 

@@ -17,6 +17,7 @@ const navLabels = {
   scripts: ["Scripts", "Roteiros"], storyboard: ["Storyboard", "Storyboard"], scenes: ["Scene generation", "Geração de cenas"],
   narration: ["Narration", "Narração"], timeline: ["Timeline", "Linha do tempo"], assets: ["Asset library", "Biblioteca"],
   thumbnails: ["Thumbnails", "Miniaturas"],
+  delivery: ["Delivery review", "Revisão da entrega"],
   proposals: ["Edit proposals", "Propostas de edição"],
   costs: ["Cost analytics", "Custos"], providers: ["Providers", "Provedores"], settings: ["Settings", "Configurações"],
 };
@@ -31,13 +32,13 @@ const productionStages = {
   ASSET_GENERATION: ["scenes", "Check footage", "Conferir tomadas"],
   SCENE_REVIEW: ["scenes", "Review footage", "Revisar tomadas"],
   VIDEO_ASSEMBLY: ["timeline", "Open editor", "Abrir editor"],
-  FINAL_REVIEW: ["timeline", "Review video", "Revisar vídeo"],
+  FINAL_REVIEW: ["delivery", "Review delivery", "Revisar entrega"],
   EXPORT: ["timeline", "View delivery", "Ver entrega"],
 };
 const projectNavigation = [
   ["Story", "Pauta e roteiro", ["research", "scripts"]],
   ["Scenes and voice", "Cenas e narração", ["storyboard", "scenes", "narration"]],
-  ["Assets and publishing", "Acervo e publicação", ["assets", "thumbnails"]],
+  ["Assets and publishing", "Acervo e publicação", ["delivery", "assets", "thumbnails"]],
   ["Studio settings", "Operação", ["proposals", "costs", "providers", "settings"]],
 ];
 const states = {
@@ -1233,7 +1234,10 @@ function timelineView() {
     button(tr("Save timeline", "Salvar linha do tempo"), async () => {
       if (await saveTimeline()) notify(tr("Timeline saved", "Linha do tempo salva"));
     }, false, !draft.clips.length),
-    missingButton, renderButton, activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
+    missingButton, renderButton, saved && button(tr("Review delivery", "Revisar entrega"), async () => {
+      if (json(saved.data) !== json(draft) && !await saveTimeline()) return;
+      navigate("delivery");
+    }), activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
   const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
     node("div", {class: "stack preview-stack"}, panel, row(mode, assetBadge(assembly)), previewInfo), sequence, inspector));
   const result = stack(title(project.data.title), rough || content, !rough && row(draftInfo), !rough && controls,
@@ -1260,6 +1264,110 @@ function timelineView() {
   result.addEventListener("input", refreshTimelineState);
   result.addEventListener("change", refreshTimelineState);
   return result;
+}
+
+async function deliveryView() {
+  const target = projectId;
+  const endpoint = path("/delivery");
+  const plan = await api(endpoint);
+  if (target !== projectId) return null;
+  const assembly = current("assembly"), exported = current("export");
+  const matching = plan.revision && assembly?.fresh && assembly.data.timeline_revision === plan.revision;
+  const final = matching && !assembly.data.watermark;
+  const delivered = final && exported?.fresh && exported.data.timeline_revision === plan.revision;
+  const player = mediaPreview(assembly);
+  player?.setAttribute("aria-label", tr("Delivery assembly", "Montagem da entrega"));
+  const preview = player && card(node("div", {class: "preview-stage"}, player), row(assetBadge(assembly),
+    small(tr("Assembly v", "Montagem v") + assembly.seq),
+    matching && small(tr("Saved cut v", "Corte salvo v") + plan.seq),
+    !matching && small(tr("Earlier assembly", "Montagem anterior"))));
+  for (const [language, id] of Object.entries(assembly?.data.captions || {})) {
+    player?.append(node("track", {kind: "subtitles", srclang: language, label: language, src: path("/media/" + id + "?webvtt=true")}));
+  }
+  const files = (item, currentDelivery) => item && row(
+    node("a", {href: item.url + "?attachment=true"}, currentDelivery ?
+      tr("Download final MP4", "Baixar MP4 final") : tr("Download existing MP4", "Baixar MP4 existente")),
+    ...Object.entries(item.data.captions || {}).map(([language, id]) => node("a",
+      {href: path("/media/" + id + "?attachment=true")}, language + " · SRT")));
+  const editor = button(tr("Open editor", "Abrir editor"), () => navigate("timeline"));
+  const heading = title(tr("Delivery review", "Revisão da entrega"), editor);
+  if (plan.blocked) return stack(heading, card(node("p", {role: "status"}, plan.blocked),
+    files(exported, false)), preview);
+
+  const materialNames = {scene: ["Storyboard", "Storyboard"], image: ["Reference frame", "Quadro de referência"],
+    video: ["Take", "Tomada"], voice: ["Narration", "Narração"], translation: ["Translation", "Tradução"],
+    reference: ["Reference", "Referência"], audio: ["Audio", "Áudio"]};
+  const pending = scene => scene.materials.some(item => item.status === "AWAITING_REVIEW");
+  const incomplete = plan.scenes.filter(pending);
+  const materialIds = materials => [...new Set(materials.map(item => item.id))];
+  const active = project.jobs.find(job => ["assembly", "export"].includes(job.operation) &&
+    ["DRAFT", "GENERATING"].includes(job.status));
+  const chapter = scene => button(tr("Go to scene", "Ir ao trecho"), () => {
+    const seek = () => { player.currentTime = Math.min(scene.start, player.duration); };
+    if (player.readyState) seek();
+    else player.addEventListener("loadedmetadata", seek, {once: true});
+    player.scrollIntoView({block: "nearest"});
+    player.focus({preventScroll: true});
+  });
+  const materials = rows => rows.flatMap(scene => scene.materials);
+  const approvals = rows => {
+    const pendingMaterials = materials(rows).filter(item => item.status === "AWAITING_REVIEW");
+    modal(tr("Approve selected materials", "Aprovar materiais selecionados"),
+      stack(node("p", {}, tr(
+        "Confirm that you reviewed these scenes, including any provisional frames and system narration.",
+        "Confirme que você revisou estas cenas, incluindo os quadros provisórios e a voz do sistema onde estiverem presentes.")),
+      node("ul", {}, rows.map(scene => node("li", {}, scene.title))),
+      small(pendingMaterials.length + " " + tr("versions to approve", "versões a aprovar"))), [
+        button(tr("Confirm material approval", "Confirmar aprovação dos materiais"), async () => {
+          await api(endpoint + "/materials", "POST", {revision: plan.revision, confirmed: true,
+            scenes: rows.map(scene => scene.id), versions: materialIds(materials(rows))});
+          ui("dialog").close();
+          if (target === projectId) await refresh();
+        }, true),
+      ]);
+  };
+  const checklist = card(node("h2", {}, tr("Scene materials", "Materiais das cenas")),
+    ...plan.scenes.map(scene => node("details", {}, node("summary", {},
+      scene.title + " · " + (pending(scene) ? tr("Awaiting review", "A revisar") : tr("Reviewed", "Revisada"))),
+      stack(row(small(formatDuration(scene.start) + " – " + formatDuration(scene.end)),
+        matching && player && chapter(scene)),
+      ...scene.materials.map(item => {
+        const title = tr(...materialNames[item.kind]) + (item.language ? " · " + item.language : "") + " · v" + item.seq;
+        const guide = item.provisional && (item.kind === "voice" || item.kind === "image" || item.kind === "video") ?
+          small(item.kind === "voice" ? tr("System voice", "Voz do sistema") : tr("Draft material", "Material de rascunho")) : null;
+        return row(item.url ? node("a", {href: item.url, target: "_blank", rel: "noopener"}, title) : small(title),
+          guide, badge(item.status));
+      }),
+      pending(scene) && button(tr("Approve scene materials", "Aprovar materiais da cena"), () => approvals([scene]))))));
+  let action;
+  if (active) {
+    action = stack(small(tr("Processing on the server", "Processando no servidor")),
+      node("progress", {max: 100, value: active.progress, "aria-label": tr("Delivery progress", "Progresso da entrega")}));
+  } else if (delivered) {
+    action = files(exported, true);
+  } else if (incomplete.length) {
+    action = stack(small(incomplete.length + " " + tr("scenes with materials to review", "cenas com materiais a revisar")),
+      button(tr("Approve reviewed materials", "Aprovar materiais revisados"), () => approvals(incomplete), true));
+  } else if (final && ready(assembly)) {
+    action = button(tr("Prepare approved export", "Preparar exportação aprovada"),
+      () => quote([{operation: "export", version: assembly.id}]), true);
+  } else if (final && assembly.status === "AWAITING_REVIEW") {
+    action = button(tr("Approve final assembly", "Aprovar montagem final"), () => review([assembly], "APPROVED"), true);
+  } else {
+    action = button(tr("Prepare final assembly", "Preparar montagem final"), async () => {
+      const saved = await api(endpoint + "/prepare", "POST", {revision: plan.revision, confirmed: true,
+        versions: materialIds([...materials(plan.scenes), ...plan.attachments])});
+      if (target !== projectId) return;
+      const editBase = project.versions.find(version => version.id === timelineBase);
+      if (timelineDraft && json(timelineDraft) === json(editBase?.data)) timelineDraft = null;
+      await refresh(false);
+      if (target === projectId) await quote([{operation: "assembly", version: saved.id}]);
+    }, true);
+  }
+  const delivery = card(node("h2", {}, tr("Assembly and export", "Montagem e exportação")),
+    small([tr("Cut v", "Corte v") + plan.seq, plan.aspect, plan.resolution + "p", plan.languages.join(", ")].join(" · ")),
+    action, !delivered && files(exported, false));
+  return stack(heading, preview, delivery, checklist, assembly && revisions("assembly"), jobHistory());
 }
 
 function jobHistory() {
@@ -1769,7 +1877,7 @@ function render() {
   ui("navigation").setAttribute("aria-label", tr("Studio", "Estúdio"));
   ui("navigation").replaceChildren(node("div", {class: "nav-desktop"}, menu),
     node("div", {class: "nav-mobile"}, mobile));
-  const asyncViews = {providers: providersView, catalog: catalogView, proposals: proposalsView};
+  const asyncViews = {providers: providersView, catalog: catalogView, proposals: proposalsView, delivery: deliveryView};
   if (page in asyncViews) {
     const loadingPage = page;
     const loadingProject = projectId;
