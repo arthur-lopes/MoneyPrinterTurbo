@@ -1,9 +1,10 @@
 "use strict";
 
 const ui = id => document.getElementById(id);
+const entry = new URLSearchParams(location.search);
 let locale = localStorage.getItem("mpt-production-language") || "en";
-let projectId = sessionStorage.getItem("mpt-production-project");
-let projects = [], project = null, loggedIn = false, page = "dashboard";
+let projectId = entry.get("project") || sessionStorage.getItem("mpt-production-project");
+let projects = [], project = null, loggedIn = false, page = entry.get("view") || "dashboard";
 let loginMethod = "token";
 let providerCurrency = null;
 let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null;
@@ -18,6 +19,26 @@ const navLabels = {
   thumbnails: ["Thumbnails", "Miniaturas"],
   costs: ["Cost analytics", "Custos"], providers: ["Providers", "Provedores"], settings: ["Settings", "Configurações"],
 };
+const productionStages = {
+  IDEA: ["research", "Start research", "Iniciar pesquisa"],
+  RESEARCH: ["research", "Review sources", "Revisar fontes"],
+  SCRIPT: ["scripts", "Write script", "Criar roteiro"],
+  SCRIPT_APPROVAL: ["scripts", "Review script", "Revisar roteiro"],
+  STORYBOARD: ["storyboard", "Plan scenes", "Planejar cenas"],
+  STORYBOARD_APPROVAL: ["storyboard", "Review storyboard", "Revisar storyboard"],
+  COST_ESTIMATION: ["scenes", "Prepare footage", "Preparar tomadas"],
+  ASSET_GENERATION: ["scenes", "Check footage", "Conferir tomadas"],
+  SCENE_REVIEW: ["scenes", "Review footage", "Revisar tomadas"],
+  VIDEO_ASSEMBLY: ["timeline", "Open editor", "Abrir editor"],
+  FINAL_REVIEW: ["timeline", "Review video", "Revisar vídeo"],
+  EXPORT: ["timeline", "View delivery", "Ver entrega"],
+};
+const projectNavigation = [
+  ["Story", "Pauta e roteiro", ["research", "scripts"]],
+  ["Scenes and voice", "Cenas e narração", ["storyboard", "scenes", "narration"]],
+  ["Assets and publishing", "Acervo e publicação", ["assets", "thumbnails"]],
+  ["Studio settings", "Operação", ["costs", "providers", "settings"]],
+];
 const states = {
   APPROVED: ["Approved", "Aprovado"], REJECTED: ["Rejected", "Rejeitado"], DRAFT: ["Draft", "Rascunho"],
   AWAITING_REVIEW: ["Awaiting review", "Em revisão"], REVISION_REQUESTED: ["Revision requested", "Revisão solicitada"],
@@ -114,8 +135,9 @@ async function api(url, method = "GET", data) {
 
 function modal(heading, content, controls = []) {
   const dialog = ui("dialog");
-  ui("dialog-content").replaceChildren(stack(node("h2", {}, heading), content, row(...controls,
+  ui("dialog-content").replaceChildren(stack(node("h2", {id: "dialog-title"}, heading), content, row(...controls,
     button(tr("Close", "Fechar"), () => dialog.close()))));
+  dialog.setAttribute("aria-labelledby", "dialog-title");
   if (!dialog.open) dialog.showModal();
 }
 
@@ -165,7 +187,10 @@ function reviewControls(item) {
 
 async function quote(jobs) {
   if (!jobs.length) return;
-  const result = await api(path("/quotes"), "POST", {jobs});
+  const target = projectId;
+  const quotePath = path("/quotes");
+  const result = await api(quotePath, "POST", {jobs});
+  if (projectId !== target) return;
   const maximum = input((result.total / 100).toFixed(2), {type: "number", min: 0, step: ".01"});
   const consent = input("", {type: "checkbox"});
   const usesCodex = result.items.some(item => item.billing === "subscription");
@@ -185,7 +210,7 @@ async function quote(jobs) {
       if (!consent.checked || !maximum.value || !maximum.checkValidity()) {
         throw new Error(tr("Confirm the spending maximum", "Confirme o limite de gasto"));
       }
-      await mutate(path("/quotes/" + result.id + "/authorize"), "POST",
+      await mutate(quotePath + "/" + result.id + "/authorize", "POST",
         {maximum: Math.round(Number(maximum.value) * 100), confirmed: true});
       ui("dialog").close();
       notify(tr("Jobs queued", "Trabalhos enfileirados"));
@@ -193,23 +218,31 @@ async function quote(jobs) {
   ]);
 }
 
-function mediaPreview(item) {
+function mediaPreview(item, preload = "metadata") {
   if (!item?.url) return null;
   if (item.kind === "captions") return null;
   if (["image", "reference", "thumbnail"].includes(item.kind)) return node("img", {
     src: item.url, alt: item.data.title || item.data.headline || tr("Image preview", "Prévia da imagem"), loading: "lazy"});
   const tag = ["voice", "audio"].includes(item.kind) ? "audio" : "video";
-  return node(tag, {src: item.url, controls: true, preload: "metadata", playsinline: true});
+  return node(tag, {src: item.url, controls: true, preload, playsinline: true});
 }
 
 function revisions(slot) {
   const versions = project.versions.filter(item => item.slot === slot);
-  return node("details", {}, node("summary", {}, tr("Versions and comparison", "Versões e comparação") + " (" + versions.length + ")"),
-    grid(...versions.map(item => card(row(node("strong", {}, "v" + item.seq), assetBadge(item)),
-      mediaPreview(item), node("details", {}, node("summary", {}, tr("Parameters and reviews", "Parâmetros e revisões")),
-        node("pre", {}, json(item.data)), ...project.reviews.filter(r => r.version === item.id).map(r =>
+  const reviews = project.reviews;
+  const details = node("details", {}, node("summary", {}, tr("Versions and comparison", "Versões e comparação") +
+    " (" + versions.length + ")"));
+  function reveal() {
+    if (!details.open) return;
+    details.removeEventListener("toggle", reveal);
+    details.append(grid(...versions.map(item => card(row(node("strong", {}, "v" + item.seq), assetBadge(item)),
+      mediaPreview(item, "none"), node("details", {}, node("summary", {}, tr("Parameters and reviews", "Parâmetros e revisões")),
+        node("pre", {}, json(item.data)), ...reviews.filter(r => r.version === item.id).map(r =>
           node("p", {}, badge(r.decision), " ", r.comment, " · ", r.actor, " · ", new Date(r.created * 1000).toLocaleString()))),
       item.url && node("a", {href: item.url + "?attachment=true"}, tr("Download version", "Baixar versão"))))));
+  }
+  details.addEventListener("toggle", reveal);
+  return details;
 }
 
 function importAsset(kind, scene, language) {
@@ -319,7 +352,10 @@ async function catalogView() {
 }
 
 function formatDuration(seconds) {
-  return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+  const tenths = Math.round(seconds * 10);
+  const rest = String(Math.floor(tenths / 10) % 60).padStart(2, "0");
+  return Math.floor(tenths / 600) + ":" + rest +
+    (tenths % 10 ? tr(".", ",") + String(tenths % 10) : "");
 }
 
 function createEditorialProject(episode) {
@@ -373,17 +409,23 @@ function dashboard() {
     [tr("Estimated spend", "Gasto estimado"), format(c.estimated)], [tr("Actual spend", "Gasto efetivo"), format(c.actual)],
     [tr("Remaining budget", "Orçamento restante"), format(c.remaining)], [tr("Export status", "Estado da exportação"), badge(project.export_status)],
   ];
+  const [next, en, pt] = productionStages[project.stage] || productionStages.IDEA;
+  const needsVoice = project.stage === "VIDEO_ASSEMBLY" && project.scenes.some(scene =>
+    project.data.languages.some(language => !ready(current("voice/" + scene + "/" + language))));
   return stack(title(d.title, badge(project.stage)),
     node("p", {}, d.topic), small([d.audience, d.languages.join(", "), d.duration + " s"].join(" · ")),
+    row(button(needsVoice ? tr("Prepare narration", "Preparar narração") : tr(en, pt),
+      () => navigate(needsVoice ? "narration" : next), true)),
     d.editorial && card(node("h2", {}, d.editorial.id + " · " + d.editorial.series),
       node("p", {}, d.editorial.opening_hook), node("p", {}, d.editorial.visual_plan),
       d.editorial.evidence && evidenceBrief(d.editorial.evidence),
       node("p", {}, d.editorial.fact_check),
       node("a", {href: d.editorial.research_start.url, target: "_blank", rel: "noopener noreferrer"},
         d.editorial.research_start.label)),
-    node("progress", {max: 100, value: project.progress, "aria-label": tr("Production progress", "Progresso da produção")}),
-    node("div", {class: "grid stats"}, values.map(([key, value]) => card(small(key), node("div", {class: "metric"}, value)))),
-    jobsTable());
+    node("details", {}, node("summary", {}, tr("Progress and costs", "Progresso e custos")),
+      node("progress", {max: 100, value: project.progress, "aria-label": tr("Production progress", "Progresso da produção")}),
+      node("div", {class: "grid stats"}, values.map(([key, value]) => card(small(key), node("div", {class: "metric"}, value))))),
+    jobHistory());
 }
 
 function researchView() {
@@ -808,7 +850,7 @@ function retentionPanel(assembly) {
 }
 
 function timelineView() {
-  const saved = current("timeline");
+  let saved = current("timeline");
   if (!timelineDraft) {
     const defaultClips = project.scenes.map(scene => ({scene, trim: 0, narration_offset: 0, transition: "cut"}));
     const existing = saved?.data;
@@ -818,25 +860,139 @@ function timelineView() {
       resolution: 1080, subtitles: true, watermark: false, music: null, music_volume: .15, metadata: {},
     };
   }
-  let draft = timelineDraft;
-  const content = stack();
+  const draft = timelineDraft;
+  const sequence = node("div", {class: "timeline", role: "group",
+    "aria-label": tr("Scene sequence", "Sequência de cenas")});
+  const inspector = node("div", {class: "editor-inspector stack"});
   const audioAssets = project.versions.filter(v => v.kind === "audio" && ready(v)).map(v => [v.id, v.data.title]);
   const assembly = current("assembly"), exported = current("export");
-  function fields() {
-    selectedClip = Math.min(selectedClip, Math.max(0, draft.clips.length - 1));
-    const control = node("div", {class: "timeline", "aria-label": tr("Scene sequence", "Sequência de cenas")},
-      ...draft.clips.map((item, i) => node("button", {type: "button", "aria-pressed": String(i === selectedClip),
-        onclick: () => { selectedClip = i; fields(); }}, sceneData(item.scene)?.data.title || item.scene)));
-    const clip = draft.clips[selectedClip];
-    const form = clip ? clipEditor(clip) : null;
-    content.replaceChildren(control, ...(form ? [form] : []));
+  const panel = node("div", {class: "preview-stage"});
+  const previewInfo = node("p", {class: "muted preview-info"});
+  const draftInfo = node("small", {role: "status"});
+  const rendered = mediaPreview(assembly);
+  const versions = new Map(project.versions.map(v => [v.id, v]));
+  const chapters = (assembly?.data.retention || []).flatMap(entry => {
+    const slot = versions.get(entry.video)?.slot;
+    return slot?.startsWith("video/") ? [{...entry, sceneId: slot.slice(6)}] : [];
+  });
+  const mode = select([
+    ...(rendered ? [["assembly", tr("Latest assembly", "Última montagem")]] : []),
+    ["clip", tr("Selected take", "Tomada selecionada")],
+  ], rendered ? "assembly" : "clip");
+  mode.setAttribute("aria-label", tr("Preview source", "Fonte da prévia"));
+  let previewMedia, clipPreview, clipPreviewId;
+
+  function footage(clip) {
+    return clip?.video ? versions.get(clip.video) : clip && current("video/" + clip.scene);
   }
+
+  function referenceImage(video) {
+    return video?.dependencies.map(dep => versions.get(dep.id)).find(asset => asset?.kind === "image");
+  }
+
+  function refreshDraftInfo() {
+    draftInfo.textContent = saved && json(saved.data) === json(draft) ?
+      tr("Timeline saved · v", "Linha do tempo salva · v") + saved.seq :
+      tr("Timeline draft · save to resume later", "Rascunho da linha do tempo · salve para retomar depois");
+  }
+
+  function seek(player, time) {
+    if (!player || !Number.isFinite(time)) return;
+    if (player.readyState > 0) player.currentTime = Math.min(time, player.duration);
+    else player.addEventListener("loadedmetadata", () => {
+      player.currentTime = Math.min(time, player.duration);
+    }, {once: true});
+  }
+
+  function showPreview(seekToScene = false) {
+    const clip = draft.clips[selectedClip];
+    let media = rendered;
+    if (mode.value === "clip") {
+      const source = footage(clip);
+      if (source?.id !== clipPreviewId) {
+        clipPreviewId = source?.id;
+        clipPreview = mediaPreview(source);
+        if (clipPreview) {
+          clipPreview.setAttribute("aria-label", tr("Selected take", "Tomada selecionada"));
+          const poster = referenceImage(source);
+          if (poster?.url) clipPreview.poster = poster.url;
+        }
+      }
+      media = clipPreview;
+      previewInfo.textContent = source ? tr(
+        "Source take · assembly audio, subtitles and transitions appear after rendering.",
+        "Tomada original · áudio da montagem, legendas e transições aparecem após renderizar.") :
+        tr("Add a take to this scene to preview it.", "Adicione uma tomada à cena para assistir aqui.");
+      if (seekToScene) seek(media, clip?.trim || 0);
+    } else {
+      previewInfo.textContent = tr("Rendered assembly · v", "Montagem renderizada · v") + assembly.seq +
+        (assembly.fresh ? "" : tr(" · inputs have changed", " · os insumos mudaram"));
+      const chapter = chapters.find(item => item.sceneId === clip?.scene);
+      if (seekToScene && chapter) seek(media, chapter.start);
+    }
+    if (media === previewMedia && panel.hasChildNodes()) return;
+    previewMedia?.pause();
+    panel.replaceChildren(media || node("p", {class: "muted"},
+      tr("Your preview will appear here.", "Sua prévia vai aparecer aqui.")));
+    previewMedia = media;
+  }
+
+  function selectClip(index, seekToScene) {
+    selectedClip = index;
+    [...sequence.children].forEach((control, i) =>
+      control.setAttribute("aria-pressed", String(i === index)));
+    const clip = draft.clips[index];
+    inspector.replaceChildren(clip ? clipEditor(clip) : node("p", {},
+      tr("Plan the scenes before assembling your video.", "Planeje as cenas antes de montar o vídeo.")));
+    showPreview(seekToScene);
+  }
+
+  function fields(focus = false) {
+    selectedClip = Math.min(selectedClip, Math.max(0, draft.clips.length - 1));
+    sequence.replaceChildren(...draft.clips.map((item, i) => {
+      const scene = sceneData(item.scene);
+      const image = referenceImage(footage(item)) || current("image/" + item.scene);
+      return node("button", {type: "button", onclick: () => selectClip(i, true)},
+        image?.url && node("img", {src: image.url, alt: "", loading: "lazy", decoding: "async"}),
+        node("span", {}, scene?.data.title || item.scene),
+        small(formatDuration(item.seconds ?? scene?.data.seconds ?? 0)));
+    }));
+    selectClip(selectedClip, false);
+    if (focus) sequence.children[selectedClip]?.focus();
+  }
+
+  mode.addEventListener("change", () => showPreview(true));
+  if (rendered) {
+    const poster = referenceImage(versions.get(chapters[0]?.video));
+    if (poster?.url) rendered.poster = poster.url;
+    for (const [language, id] of Object.entries(assembly.data.captions || {})) {
+      rendered.append(node("track", {kind: "subtitles", srclang: language, label: language,
+        src: path("/media/" + id + "?webvtt=true")}));
+    }
+    rendered.setAttribute("aria-label", tr("Rendered assembly", "Montagem renderizada"));
+    rendered.addEventListener("timeupdate", () => {
+      if (mode.value !== "assembly" || inspector.contains(document.activeElement)) return;
+      const chapter = chapters.find(item => item.start <= rendered.currentTime && rendered.currentTime < item.end);
+      const index = draft.clips.findIndex(clip => clip.scene === chapter?.sceneId);
+      if (index >= 0 && index !== selectedClip) selectClip(index, false);
+    });
+  }
+
   function clipEditor(clip) {
     const options = project.versions.filter(item => item.slot === "video/" + clip.scene && ready(item)).map(item => [item.id, "v" + item.seq]);
     const video = select([["", tr("Current approved clip", "Clipe aprovado atual")], ...options], clip.video || "");
-    video.addEventListener("change", () => { clip.video = video.value || null; });
+    if (clip.video && !options.some(([id]) => id === clip.video)) {
+      video.append(node("option", {value: clip.video}, tr("Previous take · needs review", "Tomada anterior · requer revisão")));
+      video.value = clip.video;
+    }
+    video.addEventListener("change", () => {
+      clip.video = video.value || null;
+      mode.value = "clip";
+      showPreview(true);
+    });
     const numeric = (key, en, pt, optional = false) => label(tr(en, pt), input(clip[key] ?? "", {
       type: "number", min: 0, step: ".05", oninput: e => { clip[key] = optional && !e.target.value ? null : Number(e.target.value); },
+      onchange: () => { if (key === "trim" && mode.value === "clip") seek(clipPreview, clip.trim); },
     }));
     const transition = select([["cut", tr("Cut", "Corte")], ["fade", tr("Fade to black", "Fade para preto")]], clip.transition);
     transition.addEventListener("change", () => { clip.transition = transition.value; });
@@ -846,13 +1002,19 @@ function timelineView() {
       const a = selectedClip, b = a + offset;
       [draft.clips[a], draft.clips[b]] = [draft.clips[b], draft.clips[a]];
       selectedClip = b;
-      fields();
+      refreshDraftInfo();
+      fields(true);
     };
-    return card(row(button(tr("Move left", "Mover à esquerda"), () => swap(-1), false, selectedClip === 0),
-      button(tr("Move right", "Mover à direita"), () => swap(1), false, selectedClip >= draft.clips.length - 1)),
-    row(label(tr("Clip version", "Versão do clipe"), video), numeric("trim", "Trim start (s)", "Corte inicial (s)"),
-      numeric("seconds", "Clip length (s)", "Duração do clipe (s)", true), numeric("narration_offset", "Narration offset (s)", "Atraso da narração (s)")),
-    row(label(tr("Transition", "Transição"), transition), label(tr("Sound effect", "Efeito sonoro"), effect)));
+    return stack(node("h2", {}, sceneData(clip.scene)?.data.title || tr("Scene", "Cena")),
+      label(tr("Take", "Tomada"), video),
+      node("div", {class: "clip-timing"},
+        numeric("trim", "Trim start (s)", "Corte inicial (s)"),
+        numeric("seconds", "Clip length (s)", "Duração do clipe (s)", true)),
+      row(button(tr("Move earlier", "Mover antes"), () => swap(-1), false, selectedClip === 0),
+        button(tr("Move later", "Mover depois"), () => swap(1), false, selectedClip >= draft.clips.length - 1)),
+      node("details", {}, node("summary", {}, tr("Scene audio and transition", "Áudio e transição da cena")),
+        stack(numeric("narration_offset", "Narration offset (s)", "Atraso da narração (s)"),
+          label(tr("Transition", "Transição"), transition), label(tr("Sound effect", "Efeito sonoro"), effect))));
   }
   fields();
   const resolution = select([[1080, "1080p"], [1440, "1440p"], [2160, "4K"]], draft.resolution);
@@ -874,7 +1036,10 @@ function timelineView() {
     const translation = project.scenes.map(sid => current("translation/" + sid + "/" + language)).find(ready);
     const info = draft.metadata[language] || {title: translation?.data.title || project.data.title,
       description: translation?.data.description || project.data.topic};
-    if (draft.languages.includes(language)) draft.metadata[language] = info;
+    const updateInfo = (key, value) => {
+      info[key] = value;
+      if (draft.languages.includes(language)) draft.metadata[language] = info;
+    };
     const enabled = input("", {type: "checkbox", checked: draft.languages.includes(language), onchange: e => {
       if (e.target.checked) {
         draft.languages.push(language);
@@ -885,20 +1050,80 @@ function timelineView() {
       }
     }});
     return row(label(language, enabled), label(tr("Export title", "Título de exportação"), input(info.title,
-      {oninput: e => { info.title = e.target.value; }})), label(tr("Export description", "Descrição de exportação"), input(info.description,
-      {oninput: e => { info.description = e.target.value; }})));
+      {oninput: e => updateInfo("title", e.target.value)})), label(tr("Export description", "Descrição de exportação"), input(info.description,
+      {oninput: e => updateInfo("description", e.target.value)})));
   }));
-  return stack(title(tr("Timeline", "Linha do tempo"), assetBadge(assembly)), content, output,
-    row(button(tr("Save timeline draft", "Salvar rascunho da linha do tempo"), () => mutate(path("/timeline"), "PUT", draft)),
-      button(tr("Estimate assembly", "Estimar montagem"), () => quote([{operation: "assembly", timeline: draft}]), true)),
-    assembly && card(node("h2", {}, tr("Final review", "Revisão final")), mediaPreview(assembly), reviewControls(assembly),
-      row(node("a", {href: assembly.url + "?attachment=true"}, tr("Download draft", "Baixar rascunho")),
-        button(tr("Prepare approved export", "Preparar exportação aprovada"),
-          () => quote([{operation: "export", version: assembly.id}]), true, !ready(assembly) || assembly.data.watermark)),
+  refreshDraftInfo();
+  const activeRender = project.jobs.find(job => job.operation === "assembly" && ["DRAFT", "GENERATING"].includes(job.status));
+  const missingInput = () => {
+    if (!draft.clips.length || draft.clips.some(clip => !ready(sceneData(clip.scene)))) return "storyboard";
+    if (draft.clips.some(clip => !ready(footage(clip)))) return "scenes";
+    if (!draft.languages.length) return "output";
+    if (draft.clips.some(clip => draft.languages.some(lang => !ready(current("voice/" + clip.scene + "/" + lang))))) {
+      return "narration";
+    }
+    return null;
+  };
+  const previewActions = {
+    storyboard: ["Review storyboard", "Revisar storyboard"],
+    scenes: ["Prepare takes", "Preparar tomadas"],
+    narration: ["Prepare narration", "Preparar narração"],
+    output: ["Choose output languages", "Escolher idiomas da saída"],
+  };
+  const outputDetails = node("details", {}, node("summary", {}, tr("Output settings", "Configurações de saída")), output);
+  const renderButton = button(tr("Render preview", "Renderizar prévia"),
+    () => quote([{operation: "assembly", timeline: draft}]), true);
+  const missingButton = button("", () => {
+    const next = missingInput();
+    if (next === "output") {
+      outputDetails.open = true;
+      outputDetails.querySelector("summary").focus();
+    } else if (next) navigate(next);
+  }, true);
+  const controls = row(
+    button(tr("Save timeline", "Salvar linha do tempo"), async () => {
+      const target = projectId;
+      const draftData = json(draft);
+      const result = await api(path("/timeline"), "PUT", JSON.parse(draftData));
+      if (projectId !== target || timelineDraft !== draft) return;
+      saved = result;
+      const unchanged = json(draft) === draftData;
+      if (unchanged) timelineDraft = structuredClone(result.data);
+      await refresh(unchanged);
+      if (!unchanged) refreshDraftInfo();
+      notify(tr("Timeline saved", "Linha do tempo salva"));
+    }, false, !draft.clips.length),
+    missingButton, renderButton, activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
+  const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
+    node("div", {class: "stack preview-stack"}, panel, row(mode, assetBadge(assembly)), previewInfo), sequence, inspector));
+  const result = stack(title(project.data.title), content, row(draftInfo), controls,
+    assembly && card(node("h2", {}, tr("Review rendered version", "Revisar versão renderizada")), reviewControls(assembly),
+      row(node("a", {href: assembly.url + "?attachment=true"}, tr("Download assembly", "Baixar montagem")),
+        !exported?.fresh && !assembly.data.watermark && button(tr("Prepare approved export", "Preparar exportação aprovada"),
+          () => quote([{operation: "export", version: assembly.id}]), true, !ready(assembly))),
       exported && exported.fresh && row(node("a", {href: exported.url + "?attachment=true"}, tr("Download final MP4", "Baixar MP4 final")),
         ...Object.entries(exported.data.captions || {}).map(([lang, id]) => node("a",
           {href: path("/media/" + id + "?attachment=true")}, lang + " · SRT"))),
-      revisions("assembly"), exported && revisions("export")), retentionPanel(assembly), jobsTable());
+      revisions("assembly"), exported && revisions("export")), outputDetails,
+    node("details", {}, node("summary", {}, tr("Audience retention", "Retenção de público")), retentionPanel(assembly)), jobHistory());
+  const refreshTimelineState = () => {
+    refreshDraftInfo();
+    const next = missingInput();
+    missingButton.textContent = next ? tr(...previewActions[next]) : "";
+    missingButton.hidden = !next;
+    renderButton.hidden = Boolean(next);
+    renderButton.disabled = Boolean(activeRender);
+  };
+  refreshTimelineState();
+  result.addEventListener("input", refreshTimelineState);
+  result.addEventListener("change", refreshTimelineState);
+  return result;
+}
+
+function jobHistory() {
+  const active = project.jobs.filter(job => ["DRAFT", "GENERATING"].includes(job.status));
+  return node("details", {open: Boolean(active.length)}, node("summary", {},
+    tr("Job history", "Histórico de trabalhos") + " (" + project.jobs.length + ")"), jobsTable());
 }
 
 function jobsTable() {
@@ -1221,8 +1446,14 @@ function render() {
     ui("workspace").replaceChildren(loginView());
     return;
   }
-  const pages = project ? Object.keys(navLabels) : ["catalog", "projects", "providers"];
+  const globalPages = ["projects", "catalog", "providers"];
+  const pages = project ? Object.keys(navLabels) : globalPages;
   if (!pages.includes(page)) page = "projects";
+  const url = new URL(location.href);
+  if (project) url.searchParams.set("project", project.id);
+  else url.searchParams.delete("project");
+  url.searchParams.set("view", page);
+  if (url.href !== location.href) history.replaceState(null, "", url);
   if (project) {
     const switcher = select(projects.map(p => [p.id, p.data.title]), projectId);
     switcher.setAttribute("aria-label", tr("Active project", "Projeto ativo"));
@@ -1230,8 +1461,26 @@ function render() {
     ui("utilities").prepend(switcher);
     ui("utilities").append(button(tr("Refresh project", "Atualizar projeto"), refresh));
   }
-  ui("navigation").replaceChildren(...pages.map(name => node("button", {type: "button", "aria-current": name === page ? "page" : null,
-    onclick: () => { page = name; render(); ui("workspace").focus(); }}, tr(...navLabels[name]))));
+  const nav = (name, label = navLabels[name]) => node("button", {type: "button",
+    "aria-current": name === page ? "page" : null, onclick: () => navigate(name)}, tr(...label));
+  const group = ([en, pt, views]) => node("details", {class: "nav-group", open: views.includes(page)},
+    node("summary", {}, tr(en, pt)), node("div", {class: "nav-links"}, views.map(name => nav(name))));
+  const menu = project ? [
+    nav("dashboard", ["Project overview", "Visão geral"]),
+    ...projectNavigation.slice(0, 2).map(group),
+    nav("timeline", ["Edit and review", "Editar e revisar"]),
+    ...projectNavigation.slice(2).map(group),
+    ...globalPages.slice(0, 2).map(name => nav(name)),
+  ] : globalPages.map(name => nav(name));
+  // A select keeps the complete navigation reachable on narrow screens without
+  // moving the project or the player out of the first screen.
+  const mobile = select(pages.map(name => [name, tr(...(name === "timeline" ?
+    ["Edit and review", "Editar e revisar"] : navLabels[name]))]), page);
+  mobile.setAttribute("aria-label", tr("Workspace section", "Seção do estúdio"));
+  mobile.addEventListener("change", () => navigate(mobile.value));
+  ui("navigation").setAttribute("aria-label", tr("Studio", "Estúdio"));
+  ui("navigation").replaceChildren(node("div", {class: "nav-desktop"}, menu),
+    node("div", {class: "nav-mobile"}, mobile));
   if (page === "providers" || page === "catalog") {
     const loadingPage = page;
     ui("workspace").replaceChildren(node("p", {}, tr("Loading…", "Carregando…")));
@@ -1244,6 +1493,12 @@ function render() {
   const views = {dashboard, projects: projectsView, research: researchView, scripts: scriptsView, storyboard: storyboardView,
     scenes: scenesView, narration: narrationView, timeline: timelineView, thumbnails: thumbnailsView, assets: assetView, costs: costsView, settings: settingsView};
   ui("workspace").replaceChildren(views[page]());
+}
+
+function navigate(name) {
+  page = name;
+  render();
+  ui("workspace").focus();
 }
 
 async function start() {
@@ -1260,8 +1515,13 @@ async function start() {
 
 ui("workspace").addEventListener("input", () => { editing = true; });
 
+function watchingPreview() {
+  const player = ui("workspace").querySelector(".preview-stage video");
+  return player && !player.paused && !player.ended;
+}
+
 setInterval(async () => {
-  if (polling || editing || !loggedIn || !project || ui("dialog").open || page === "providers" ||
+  if (polling || editing || !loggedIn || !project || ui("dialog").open || page === "providers" || watchingPreview() ||
       (ui("workspace").contains(document.activeElement) && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName))) return;
   if (!project.jobs.some(job => ["DRAFT", "GENERATING"].includes(job.status))) return;
   polling = true;
@@ -1269,7 +1529,7 @@ setInterval(async () => {
   const activePage = page;
   try {
     const updated = await api(path());
-    if (!editing && !ui("dialog").open && projectId === activeProject && page === activePage &&
+    if (!editing && !ui("dialog").open && !watchingPreview() && projectId === activeProject && page === activePage &&
         json(updated.jobs) !== json(project.jobs)) {
       project = updated;
       render();

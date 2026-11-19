@@ -957,6 +957,34 @@ def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
             .read_text(encoding="utf-8")
             .endswith("Uma hipótese.\n")
         )
+    client = TestClient(
+        create_app(
+            store.directory,
+            {"a" * 32: actor, "b" * 32: "another-operator"},
+            worker_enabled=False,
+            allowed_hosts=("testserver",),
+        )
+    )
+    track_url = f"/api/projects/{pid}/media/{subtitles['id']}?webvtt=true"
+    auth = {"Authorization": "Bearer " + "a" * 32}
+    track = client.get(track_url, headers=auth)
+    assert track.status_code == 200
+    assert track.headers["Content-Type"].startswith("text/vtt")
+    assert track.text.startswith("WEBVTT\n\n1\n00:00:00.000 --> ")
+    assert track.text.endswith("Uma hipótese.\n")
+    assert client.get(track_url).status_code == 401
+    assert (
+        client.get(
+            track_url, headers={"Authorization": "Bearer " + "b" * 32}
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            f"/api/projects/{pid}/media/{output['id']}?webvtt=true", headers=auth
+        ).status_code
+        == 404
+    )
     file = media.asset_path(worker.root, output["media"])
     with av.open(str(file)) as container:
         assert [stream.metadata["language"] for stream in container.streams.audio] == [

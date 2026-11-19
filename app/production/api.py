@@ -831,7 +831,11 @@ def create_app(
 
     @app.api_route("/api/projects/{pid}/media/{version}", methods=["GET", "HEAD"])
     def download(
-        pid: m.Id, version: m.Id, attachment: bool = False, actor=Depends(authenticated)
+        pid: m.Id,
+        version: m.Id,
+        attachment: bool = False,
+        webvtt: bool = False,
+        actor=Depends(authenticated),
     ):
         with store.transaction(write=False) as db:
             store.project(db, actor, pid)
@@ -842,6 +846,10 @@ def create_app(
             if not path.is_file():
                 raise RuleError("Media not found", 404)
             mime = media.FORMATS[path.suffix[1:]]
+        if webvtt:
+            if asset["kind"] != "captions" or path.suffix != ".srt":
+                raise RuleError("Subtitle track not found", 404)
+            return Response(media.webvtt(path), media_type="text/vtt")
         return FileResponse(
             path,
             media_type=mime,

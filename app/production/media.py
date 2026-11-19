@@ -403,6 +403,17 @@ def captions(path, timeline, language):
         raise MediaError("The selected timeline has no subtitle cues")
 
 
+def webvtt(path):
+    """Present the same generated subtitle cues as a native browser track."""
+    lines = path.read_text(encoding="utf-8-sig").split("\n\n")
+    for index, cue in enumerate(lines):
+        parts = cue.split("\n", 2)
+        if len(parts) == 3 and parts[0].isdecimal():
+            parts[1] = parts[1].replace(",", ".")
+            lines[index] = "\n".join(parts)
+    return "WEBVTT\n\n" + "\n\n".join(lines)
+
+
 def render(root, timeline, output, stop, timeout, progress):
     scratch = output.parent
     height = timeline["resolution"]
