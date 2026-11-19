@@ -1,9 +1,11 @@
 """Production API and same-origin workspace."""
 
 from contextlib import asynccontextmanager
+import csv
 from dataclasses import dataclass, field
 import hashlib
 import hmac
+from io import StringIO
 import os
 from pathlib import Path
 import re
@@ -516,6 +518,61 @@ def create_app(
             media_type="application/zip",
             headers={
                 "Content-Disposition": 'attachment; filename="hyphotenic-thumbnails.zip"'
+            },
+        )
+
+    @app.get("/api/projects/{pid}/retention/{version}.csv")
+    def retention_sheet(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
+        with store.transaction(write=False) as db:
+            store.project(db, actor, pid)
+            asset = store.asset(db, pid, version)
+        if asset["kind"] != "export" or not asset["data"].get("retention"):
+            raise RuleError("Choose an export with a retention worksheet", 404)
+        output = StringIO(newline="")
+        sheet = csv.writer(output)
+        sheet.writerow(
+            [
+                "export_id",
+                "clip_id",
+                "scene",
+                "start_seconds",
+                "end_seconds",
+                "cue",
+                "editorial_purpose",
+                "audience_retention_percent",
+                "views",
+                "traffic_source",
+                "observation",
+            ]
+        )
+
+        def safe_cell(value):
+            return "'" + value if value.lstrip()[:1] in {"=", "+", "-", "@"} else value
+
+        for scene in asset["data"]["retention"]:
+            prefix = [version, scene["video"], safe_cell(scene["scene"])]
+            sheet.writerow(
+                [*prefix, scene["start"], scene["end"], "scene", "", "", "", "", ""]
+            )
+            for cue in scene["cues"]:
+                sheet.writerow(
+                    [
+                        *prefix,
+                        cue["start"],
+                        cue["end"],
+                        cue["kind"],
+                        safe_cell(cue["purpose"]),
+                        "",
+                        "",
+                        "",
+                        "",
+                    ]
+                )
+        return Response(
+            "\ufeff" + output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="retention-{version[:8]}.csv"'
             },
         )
 

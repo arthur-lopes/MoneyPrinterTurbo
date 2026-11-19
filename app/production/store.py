@@ -297,7 +297,7 @@ class Store:
             return [self.asset(db, pid, asset["id"]) for asset in assets]
 
     def script(self, db, pid, data, research, job=None):
-        section_data = m.Script.model_validate(data).model_dump()
+        section_data = m.Script.model_validate(data).model_dump(exclude_none=True)
         source_catalog = research["data"]["sources"]
         for section in section_data["sections"]:
             refs = section["sources"]
@@ -371,7 +371,8 @@ class Store:
                     seconds=section["seconds"],
                     description=description,
                     image_prompt=description,
-                    video_prompt="Slow camera movement across the approved composition.",
+                    video_prompt=section.get("visual_beat")
+                    or "Slow camera movement across the approved composition.",
                     provider=project.get("defaults", {}).get("video", "local"),
                     model="gen4_turbo"
                     if project.get("defaults", {}).get("video") == "runway"

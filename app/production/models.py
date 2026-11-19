@@ -138,6 +138,35 @@ class Research(Input):
         return self
 
 
+class MotionCue(Input):
+    kind: Literal["focus", "path", "reveal"]
+    start: float = Field(ge=0, lt=120)
+    duration: float = Field(ge=0.7, le=5)
+    x: float = Field(ge=0.08, le=0.92)
+    y: float = Field(ge=0.10, le=0.77)
+    x2: float | None = Field(default=None, ge=0.08, le=0.92)
+    y2: float | None = Field(default=None, ge=0.10, le=0.77)
+    label: str = Field(default="", max_length=55)
+    purpose: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)
+    ]
+
+    @model_validator(mode="after")
+    def check_geometry(self):
+        if self.kind == "path" and (
+            self.x2 is None or self.y2 is None or (self.x, self.y) == (self.x2, self.y2)
+        ):
+            raise ValueError("A path needs two distinct screen positions")
+        if self.kind == "reveal" and not self.label.strip():
+            raise ValueError("A reveal needs a short label")
+        return self
+
+
+def check_cue_window(cues, seconds):
+    if any(cue.start + cue.duration > seconds + 1e-6 for cue in cues):
+        raise ValueError("Motion cues must fit within the section or scene duration")
+
+
 class Section(Input):
     key: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
     title: Short
@@ -147,6 +176,18 @@ class Section(Input):
         "uncertain"
     )
     sources: list[int] = Field(default_factory=list, max_length=20)
+    visual_beat: (
+        Annotated[
+            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=240)
+        ]
+        | None
+    ) = None
+    motion_cues: list[MotionCue] | None = Field(default=None, max_length=4)
+
+    @model_validator(mode="after")
+    def check_motion_plan(self):
+        check_cue_window(self.motion_cues or (), self.seconds)
+        return self
 
 
 class Script(Input):
@@ -255,7 +296,7 @@ class DeliveryMetadata(Input):
 
 
 GRAPHIC_MODES = frozenset({"map", "bar_chart", "timeline"})
-HYPERFRAMES_MODES = GRAPHIC_MODES | {"parallax"}
+HYPERFRAMES_MODES = GRAPHIC_MODES | {"parallax", "editorial_overlay"}
 
 
 class GraphicEntry(Input):
@@ -277,13 +318,17 @@ class Animation(Input):
         "map",
         "bar_chart",
         "timeline",
+        "editorial_overlay",
     ]
     title: str = Field(default="", max_length=100)
     layers: list[Id] = Field(default_factory=list, max_length=2)
     entries: list[GraphicEntry] = Field(default_factory=list, max_length=8)
+    cues: list[MotionCue] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def check_template_data(self):
+        if (self.mode == "editorial_overlay") != bool(self.cues):
+            raise ValueError("Editorial overlays require one to four motion cues")
         if self.mode == "parallax":
             if not self.layers or len(set(self.layers)) != len(self.layers):
                 raise ValueError(

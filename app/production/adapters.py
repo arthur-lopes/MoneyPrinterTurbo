@@ -150,7 +150,19 @@ def _context_prompt(kind, payload):
             "or underscores), title, narration, seconds (0 < seconds <= 120), category (verified, assumption, "
             "speculation, or uncertain), and sources (one-based supplied indices). Use the requested structure, "
             "target duration, tone and original language. Retain existing keys for revised sections. "
-            "Distinguish established facts from hypothetical scenarios and never invent sources."
+            "Distinguish established facts from hypothetical scenarios and never invent sources. "
+            "Open on a specific event or an honest question the video can answer. Deliver an early concrete "
+            "answer or piece of evidence and close the opening question within the script. Alternate visual "
+            "changes with enough time to read the frame. Give each still one continuous framing or gentle "
+            "camera move. Reserve cuts for a different image, viewpoint, subject, or genuinely new detail. "
+            "Avoid jumping back and forth between crops of the same still. Optionally add visual_beat, one concrete action, "
+            "contrast, or reveal for the editor, and motion_cues for useful attention cues. Each cue has kind "
+            "(focus, path, reveal), start and duration in scene seconds, x/y normalized screen positions, "
+            "x2/y2 for path, short label for reveal, and purpose describing the fact made easier to see. "
+            "Use x .08-.92, y .10-.77 and duration .7-5 seconds. Fit every cue inside the section and use at "
+            "most four. Use null or an empty array when the shot already carries the information. Match the "
+            "narration to the visual cue. Avoid unrelated motion, flashing, fabricated metrics, and text "
+            "that repeats the captions. Do not infer dopamine release or promise a retention increase."
         ),
         "translation": (
             "Return a JSON object with title, description and narration. Translate into the requested "
@@ -286,6 +298,7 @@ class Local:
                     "aspect": payload["timeline"]["aspect"],
                     "watermark": payload["timeline"]["watermark"],
                     "metadata": payload["timeline"]["metadata"],
+                    "retention": payload["timeline"].get("retention", []),
                 },
                 output,
                 captions,

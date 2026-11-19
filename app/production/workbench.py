@@ -7,7 +7,7 @@ import time
 from uuid import uuid4
 
 from . import codex_cli, credentials, scene_motion
-from .models import GRAPHIC_MODES, HYPERFRAMES_MODES
+from .models import GRAPHIC_MODES, HYPERFRAMES_MODES, check_cue_window
 from .store import ACTIVE, SCENE_OPERATIONS, RuleError, Store, encode, unpack
 
 
@@ -196,6 +196,8 @@ class Workbench(Store):
             raise RuleError("Include every active storyboard scene")
         deps.append({"order": order})
         clips = []
+        retention = []
+        position = 0.0
         native_width, native_height = (
             (3840, 2160) if timeline.aspect == "16:9" else (2160, 3840)
         )
@@ -254,7 +256,30 @@ class Workbench(Store):
                 deps.append({"id": effect["id"]})
                 entry["effect"] = effect["media"]
             clips.append(entry)
-        result = dict(timeline.model_dump(), clips=clips)
+            cues = []
+            for cue in (video["data"].get("animation") or {}).get("cues", []):
+                start = max(clip.trim, cue["start"])
+                end = min(clip.trim + seconds, cue["start"] + cue["duration"])
+                if end > start:
+                    cues.append(
+                        {
+                            "start": round(position + start - clip.trim, 3),
+                            "end": round(position + end - clip.trim, 3),
+                            "kind": cue["kind"],
+                            "purpose": cue["purpose"],
+                        }
+                    )
+            retention.append(
+                {
+                    "scene": scene["data"]["title"],
+                    "video": video["id"],
+                    "start": round(position, 3),
+                    "end": round(position + seconds, 3),
+                    "cues": cues,
+                }
+            )
+            position += seconds
+        result = dict(timeline.model_dump(), clips=clips, retention=retention)
         if timeline.music:
             music = self._attachment(db, pid, timeline.music, "audio")
             deps.append({"id": music["id"]})
@@ -355,7 +380,13 @@ class Workbench(Store):
                     raise RuleError(
                         "The HyperFrames renderer is unavailable on this host"
                     )
-                payload["animation"] = animation.model_dump()
+                try:
+                    check_cue_window(animation.cues, scene["data"]["seconds"])
+                except ValueError as error:
+                    raise RuleError(str(error), 422) from None
+                payload["animation"] = animation.model_dump(
+                    exclude=None if animation.cues else {"cues"}
+                )
                 payload["layers"] = []
                 for layer_id in animation.layers:
                     layer = self._attachment(db, pid, layer_id, "reference")

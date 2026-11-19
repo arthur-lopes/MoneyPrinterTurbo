@@ -393,6 +393,55 @@ function researchView() {
       reviewControls(item), revisions("research"))));
 }
 
+const motionKinds = {
+  focus: ["Highlight a detail", "Destacar detalhe"],
+  path: ["Trace a connection", "Traçar conexão"],
+  reveal: ["Reveal a short label", "Revelar texto curto"],
+};
+
+function motionCueEditor(initial, changed = () => {}) {
+  const cues = structuredClone(initial || []);
+  const fields = stack();
+  const add = button(tr("Add motion cue", "Adicionar intervenção"), () => {
+    if (cues.length === 4) return;
+    cues.push({kind: "focus", start: 0, duration: 1.5, x: .5, y: .43, purpose: "", label: ""});
+    changed(cues);
+    redraw();
+  });
+  function redraw() {
+    add.disabled = cues.length === 4;
+    fields.replaceChildren(...cues.map((cue, index) => {
+      const kind = select(Object.entries(motionKinds).map(([value, name]) => [value, tr(...name)]), cue.kind);
+      kind.addEventListener("change", () => {
+        cue.kind = kind.value;
+        if (cue.kind === "path") { cue.x2 ??= .72; cue.y2 ??= .56; }
+        changed(cues);
+        redraw();
+      });
+      const number = (key, name, max, min, scale = 1) => label(name, input((cue[key] ?? 0) * scale, {
+        type: "number", min, max, step: scale === 1 ? ".05" : "1",
+        oninput: e => { cue[key] = e.target.valueAsNumber / scale; changed(cues); },
+      }));
+      return card(row(label(tr("Effect", "Efeito"), kind),
+        number("start", tr("Start in scene (s)", "Início na cena (s)"), 120, 0),
+        number("duration", tr("Length (s)", "Duração (s)"), 5, .7)),
+        row(number("x", "X (%)", 92, 8, 100), number("y", "Y (%)", 77, 10, 100),
+          cue.kind === "path" && number("x2", tr("End X (%)", "Fim X (%)"), 92, 8, 100),
+          cue.kind === "path" && number("y2", tr("End Y (%)", "Fim Y (%)"), 77, 10, 100)),
+        cue.kind === "reveal" && label(tr("On-screen text", "Texto na tela"), input(cue.label, {
+          maxlength: 55, oninput: e => { cue.label = e.target.value; changed(cues); },
+        })),
+        label(tr("What should the viewer notice?", "O que a pessoa deve perceber?"), input(cue.purpose, {
+          maxlength: 160, required: true, oninput: e => { cue.purpose = e.target.value; changed(cues); },
+        })), button(tr("Remove cue", "Remover intervenção"), () => {
+          cues.splice(index, 1); changed(cues); redraw();
+        }));
+    }));
+  }
+  redraw();
+  return {element: stack(fields, add), cues};
+}
+
 function scriptsView() {
   const item = current("script");
   const fallback = [{key: "hook", title: tr("Opening hook", "Abertura"), seconds: 5,
@@ -411,15 +460,25 @@ function scriptsView() {
         ["speculation", tr("Speculation", "Especulação")], ["uncertain", tr("Uncertain", "Incerto")]], section.category);
       category.addEventListener("change", () => section.category = category.value);
       const refs = input(section.sources.join(", "), {oninput: e => section.sources = e.target.value.split(",").filter(v => v.trim()).map(Number)});
+      const visual = input(section.visual_beat || "", {maxlength: 240, oninput: e => {
+        if (e.target.value.trim()) section.visual_beat = e.target.value;
+        else delete section.visual_beat;
+      }});
+      const motion = motionCueEditor(section.motion_cues, cues => { section.motion_cues = cues; });
       return card(label(tr("Section title", "Título da seção"), name), label(tr("Narration", "Narração"), words),
         row(label(tr("Seconds", "Segundos"), seconds), label(tr("Claim category", "Categoria"), category),
           label(tr("Source numbers", "Números das fontes"), refs)),
+        label(tr("Visual beat", "Mudança visual"), visual),
+        node("details", {open: Boolean(section.motion_cues?.length)},
+          node("summary", {}, tr("Editorial motion", "Intervenções de movimento")), motion.element),
         button(tr("Remove section", "Remover seção"), () => { sections.splice(i, 1); fields(); }, false, sections.length === 1));
     }));
   }
   fields();
   return stack(title(tr("Scripts", "Roteiros"), assetBadge(item)),
-    card(row(label(tr("Provider", "Provedor"), provider), label(tr("Instructions", "Instruções"), instructions)),
+    card(small(tr("Pay off the opening question. Give each still a continuous shot and use motion to reveal a useful detail.",
+      "Responda à pergunta da abertura. Dê a cada imagem um plano contínuo e use movimento para revelar um detalhe relevante.")),
+      row(label(tr("Provider", "Provedor"), provider), label(tr("Instructions", "Instruções"), instructions)),
       row(button(tr("Estimate new variation", "Estimar nova versão"), () =>
         quote([{operation: "script", provider: provider.value, instructions: instructions.value}])),
       item && button(tr("Estimate AI revision", "Estimar revisão por IA"), () =>
@@ -530,6 +589,7 @@ function storyboardView() {
 }
 
 const animations = {
+  editorial_overlay: ["Editorial overlay · Anime.js", "Sobreposição editorial · Anime.js"],
   zoom_in: ["Push in", "Aproximar câmera"],
   zoom_out: ["Pull back", "Afastar câmera"],
   pan_left: ["Pan left", "Deslocar à esquerda"],
@@ -543,7 +603,11 @@ const graphicModes = new Set(["map", "bar_chart", "timeline"]);
 
 function chooseAnimation(sid, scene, clip) {
   const saved = clip?.data.animation;
-  const mode = select(Object.entries(animations).map(([name, labels]) => [name, tr(...labels)]), saved?.mode || "zoom_in");
+  const planned = scene.data.sections.length === 1 && current("script")?.data.sections
+    .find(section => section.key === scene.data.sections[0])?.motion_cues;
+  const motion = motionCueEditor(saved?.cues || planned);
+  const mode = select(Object.entries(animations).map(([name, labels]) => [name, tr(...labels)]),
+    saved?.mode || (motion.cues.length ? "editorial_overlay" : "zoom_in"));
   const fields = stack();
   const heading = input(saved?.title || "", {maxlength: 100, placeholder: scene.data.title});
   const references = project.versions.filter(v => ready(v) && v.kind === "reference" && v.data.transparent);
@@ -573,6 +637,13 @@ function chooseAnimation(sid, scene, clip) {
     fields.replaceChildren();
     values = [];
     entries.replaceChildren();
+    if (mode.value === "editorial_overlay") {
+      const frame = current("image/" + sid);
+      fields.append(small(tr("Use the approved frame as the background. Positions are percentages from the top left.",
+        "O quadro aprovado fica como fundo. As posições são percentuais a partir do canto superior esquerdo.")));
+      if (frame) fields.append(node("details", {}, node("summary", {}, tr("View reference frame", "Ver quadro de referência")), mediaPreview(frame)));
+      fields.append(motion.element);
+    }
     if (mode.value === "parallax") {
       fields.append(node("p", {}, tr(
         "The approved storyboard frame is the background. Upload transparent PNGs under Asset library and approve them to use as layers.",
@@ -594,6 +665,7 @@ function chooseAnimation(sid, scene, clip) {
   modal(tr("Local animation", "Animação local"), stack(label(tr("Preset", "Modelo"), mode), fields), [
     button(tr("Estimate animation", "Estimar animação"), async () => {
       const animation = {mode: mode.value};
+      if (mode.value === "editorial_overlay") animation.cues = motion.cues;
       if (mode.value === "parallax") {
         animation.layers = layers.map(control => control.value).filter(Boolean);
       }
@@ -700,6 +772,20 @@ function narrationView() {
   }))), jobsTable());
 }
 
+function retentionPanel(assembly) {
+  const markers = (assembly?.data.retention || []).flatMap(scene => scene.cues.map(cue => ({...cue, scene: scene.scene})));
+  const exports = project.versions.filter(v => v.kind === "export" && v.data.retention?.length).slice(0, 6);
+  return card(node("h2", {}, tr("Audience retention", "Retenção de público")),
+    small(tr("Compare the exact export in YouTube Studio. Review dips, replays and average percentage viewed for comparable traffic and lengths.",
+      "Compare a exportação no YouTube Studio. Confira quedas, reprises e percentual médio assistido em vídeos de duração e tráfego comparáveis.")),
+    markers.length > 0 && node("details", {}, node("summary", {}, tr("Rendered motion cues", "Intervenções renderizadas")),
+      ...markers.map(cue => node("p", {}, cue.start.toFixed(2) + "–" + cue.end.toFixed(2) + " s · " + cue.scene + " · " + cue.purpose))),
+    ...exports.map(item => node("a", {href: path("/retention/" + item.id + ".csv"), download: true},
+      tr("Retention worksheet", "Planilha de retenção") + " · v" + item.seq)),
+    node("a", {href: "https://support.google.com/youtube/answer/9314415", target: "_blank", rel: "noopener noreferrer"},
+      tr("YouTube retention report", "Relatório de retenção do YouTube")));
+}
+
 function timelineView() {
   const saved = current("timeline");
   if (!timelineDraft) {
@@ -791,7 +877,7 @@ function timelineView() {
       exported && exported.fresh && row(node("a", {href: exported.url + "?attachment=true"}, tr("Download final MP4", "Baixar MP4 final")),
         ...Object.entries(exported.data.captions || {}).map(([lang, id]) => node("a",
           {href: path("/media/" + id + "?attachment=true")}, lang + " · SRT"))),
-      revisions("assembly"), exported && revisions("export")), jobsTable());
+      revisions("assembly"), exported && revisions("export")), retentionPanel(assembly), jobsTable());
 }
 
 function jobsTable() {
@@ -889,8 +975,8 @@ function thumbnailsView() {
       await mutate(path("/thumbnails"), "POST", {variants: forms.map(read => read())});
       notify(tr("Thumbnail drafts saved for review", "Miniaturas salvas para revisão"));
     }, true)),
-    node("p", {class:"muted"}, tr("Use one focal point, readable text, and a visual that matches the video.",
-      "Use um ponto focal claro, texto legível e uma imagem que combine com o vídeo.")),
+    node("p", {class:"muted"}, tr("Use one focal point and text that reads on mobile. The opening should deliver the promise shared by the title and thumbnail.",
+      "Use um ponto focal e texto legível no celular. A abertura deve entregar a promessa feita pelo título e pela miniatura.")),
     node("a", {href: vertical ? "https://support.google.com/youtube/answer/72431" : "https://support.google.com/youtube/answer/16391400",
       target:"_blank", rel:"noopener noreferrer"}, tr("YouTube Studio guide", "Guia do YouTube Studio")));
 }

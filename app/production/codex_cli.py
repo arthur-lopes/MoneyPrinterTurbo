@@ -155,6 +155,23 @@ def _object(properties):
     }
 
 
+_NUMBER = {"type": "number"}
+_OPTIONAL_NUMBER = {"type": ["number", "null"]}
+_CUE = _object(
+    {
+        "kind": {"type": "string", "enum": ["focus", "path", "reveal"]},
+        "start": _NUMBER,
+        "duration": _NUMBER,
+        "x": _NUMBER,
+        "y": _NUMBER,
+        "x2": _OPTIONAL_NUMBER,
+        "y2": _OPTIONAL_NUMBER,
+        "label": _TEXT,
+        "purpose": _TEXT,
+    }
+)
+
+
 SCHEMAS = {
     "research": _object(
         {
@@ -182,6 +199,8 @@ SCHEMAS = {
                         "seconds": {"type": "number"},
                         "category": _CATEGORIES,
                         "sources": _REFERENCES,
+                        "visual_beat": {"type": ["string", "null"]},
+                        "motion_cues": {"type": ["array", "null"], "items": _CUE},
                     }
                 ),
             }

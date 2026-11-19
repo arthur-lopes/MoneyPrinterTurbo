@@ -299,6 +299,86 @@ def test_graphic_quote_uses_reviewed_scene_and_fixed_template(sandbox, monkeypat
     assert result["data"]["animation"]["entries"][0]["value"] == 200
 
 
+def test_editorial_overlay_uses_approved_frame_and_tracks_trimmed_cue(
+    sandbox, monkeypatch
+):
+    store, actor, pid = sandbox
+    sid = prepare(store, actor, pid)[0]
+    scene = review(store, actor, pid, head(store, pid, f"scene/{sid}"))
+    monkeypatch.setattr(scene_motion, "executable", lambda: "mock-hyperframes")
+    cue = {
+        "kind": "reveal",
+        "start": 0.1,
+        "duration": 1.0,
+        "x": 0.2,
+        "y": 0.5,
+        "label": "<detail>",
+        "purpose": "Show where service returns",
+    }
+    request = {
+        "operation": "video",
+        "scene": sid,
+        "animation": {"mode": "editorial_overlay", "cues": [cue]},
+    }
+    with pytest.raises(RuleError, match="image approval"):
+        authorize(store, actor, pid, request)
+    worker = Worker(store)
+    authorize(store, actor, pid, {"operation": "image", "scene": sid})
+    assert worker.step()
+    review(store, actor, pid, head(store, pid, f"image/{sid}"))
+    too_late = dict(
+        request, animation={"mode": "editorial_overlay", "cues": [dict(cue, start=2.8)]}
+    )
+    with pytest.raises(RuleError, match="fit within"):
+        authorize(store, actor, pid, too_late)
+
+    def render(args, **kwargs):
+        directory = kwargs["cwd"]
+        html = (directory / "index.html").read_text(encoding="utf-8")
+        assert "&lt;detail&gt;" in html and "<detail>" not in html
+        assert (directory / "anime.js").is_file()
+        assert (directory / "editorial-frame.png").is_file()
+        (directory / "video.mp4").write_bytes(b"fixture")
+
+    monkeypatch.setattr(media, "run", render)
+    authorize(store, actor, pid, request)
+    assert worker.step()
+    video = review(store, actor, pid, head(store, pid, f"video/{sid}"))
+    with store.transaction() as db:
+        db.execute("UPDATE scenes SET active=0 WHERE project=? AND id<>?", (pid, sid))
+        voice = store.add(
+            db,
+            pid,
+            f"voice/{sid}/en-US",
+            "voice",
+            {"seconds": 0.6, "narration": scene["data"]["narration"]},
+            [],
+            media="voice.wav",
+        )
+    review(store, actor, pid, voice)
+    with store.transaction(write=False) as db:
+        timeline = store._timeline(
+            db,
+            pid,
+            store.project(db, actor, pid)["data"],
+            m.Timeline(
+                clips=[m.Clip(scene=sid, trim=0.25, seconds=1.5)], languages=["en-US"]
+            ),
+            [],
+        )
+    assert timeline["retention"] == [
+        {
+            "scene": scene["data"]["title"],
+            "video": video["id"],
+            "start": 0.0,
+            "end": 1.5,
+            "cues": [
+                {"start": 0.0, "end": 0.85, "kind": "reveal", "purpose": cue["purpose"]}
+            ],
+        }
+    ]
+
+
 def test_elevenlabs_uses_approved_text_and_single_paid_attempt(sandbox, monkeypatch):
     store, actor, pid = sandbox
     sid = prepare(store, actor, pid)[0]
@@ -687,6 +767,30 @@ def test_api_auth_owner_and_cross_site(tmp_path):
         .startswith("image/png")
     )
     assert client.get(new.json()["url"], headers=other).status_code == 404
+    store = Workbench(tmp_path)
+    with store.transaction() as db:
+        asset = store.add(
+            db,
+            pid,
+            "export",
+            "export",
+            {
+                "retention": [
+                    {
+                        "scene": "=formula",
+                        "video": uuid4().hex,
+                        "start": 0.0,
+                        "end": 1.5,
+                        "cues": [],
+                    },
+                ]
+            },
+        )
+    sheet = p + f"/retention/{asset['id']}.csv"
+    assert client.get(sheet, headers=other).status_code == 404
+    result = client.get(sheet, headers=auth)
+    assert result.status_code == 200 and "'=formula" in result.text
+    assert result.headers["content-disposition"].startswith("attachment")
 
 
 def write_voice(destination):
@@ -782,6 +886,15 @@ def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
     authorize(store, actor, pid, {"operation": "export", "version": assembly["id"]})
     assert worker.step()
     output = head(store, pid, "export")
+    assert output["data"]["retention"] == [
+        {
+            "scene": story["data"]["title"],
+            "video": clip["id"],
+            "start": 0.0,
+            "end": 2.0,
+            "cues": [],
+        }
+    ]
     with store.transaction(write=False) as db:
         assert set(output["data"]["captions"]) == {"en-US", "pt-BR"}
         subtitles = store.asset(db, pid, output["data"]["captions"]["pt-BR"])

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import shutil
 
-from . import media
+from . import editorial_overlay, media
 
 
 DEFAULT_RENDERER = "/opt/moneyprinter/hyperframes/bin/hyperframes"
@@ -117,7 +117,17 @@ def render(root, payload, output, stop, timeout):
     entries = animation["entries"]
     step = min(0.55, seconds / (len(entries) + 3))
     width, height = (1280, 720) if payload["style"]["aspect"] == "16:9" else (720, 1280)
-    if mode == "parallax":
+    scripts = ""
+    if mode == "editorial_overlay":
+        content = editorial_overlay.prepare(
+            scratch,
+            media.asset_path(root, payload["first_frame"]),
+            animation["cues"],
+            width,
+            height,
+        )
+        scripts = '<script src="anime.js"></script><script src="editorial-overlay.js"></script>'
+    elif mode == "parallax":
         paths = [payload["first_frame"], *payload["layers"]]
         nodes = []
         for i, path in enumerate(paths):
@@ -142,11 +152,11 @@ def render(root, payload, output, stop, timeout):
         title = escape(animation["title"] or payload["scene"]["title"])
         content = f'<section class="graphic"><h1>{title}</h1>{graphic}</section>'
     (scratch / "index.html").write_text(
-        f'<!DOCTYPE html><html><head><meta charset="utf-8"><style>{CSS}</style></head>'
+        f'<!DOCTYPE html><html><head><meta charset="utf-8"><style>{CSS}{editorial_overlay.CSS if scripts else ""}</style></head>'
         f'<body><main data-composition-id="main" data-start="0" data-duration="{seconds:.4f}" '
         f'data-width="{width}" data-height="{height}" data-no-timeline '
         f'style="--duration:{seconds:.4f}s;--reveal:{min(0.38, step):.4f}s;'
-        f'--grow:{min(0.9, 2 * step):.4f}s">{content}</main></body></html>',
+        f'--grow:{min(0.9, 2 * step):.4f}s">{content}</main>{scripts}</body></html>',
         encoding="utf-8",
     )
     media.run(
