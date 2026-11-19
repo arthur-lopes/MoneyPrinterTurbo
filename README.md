@@ -57,7 +57,7 @@ The VPS service serves `127.0.0.1:8765`. Forward that port over SSH for local ac
 
 For browser access over HTTPS, configure `MPT_PRODUCTION_PUBLIC_ORIGIN`, `MPT_PRODUCTION_USERNAME`, and `MPT_PRODUCTION_PASSWORD_HASH` in the service environment file. The hash uses `pbkdf2_sha256$600000$<16-byte salt in hex>$<32-byte digest in hex>`. Route the configured hostname through a local TLS proxy that preserves the Host header and sets the forwarded scheme and client address. The public login uses a secure cookie and opens the same workspace as the local operator.
 
-For subscription-backed generation, run `sudo -u moneyprinter env HOME=/var/lib/moneyprinter CODEX_HOME=/var/lib/moneyprinter/codex /opt/moneyprinter/codex/bin/codex login --device-auth` on the VPS and authorize the device on your ChatGPT account.
+For subscription-backed generation, sign in to the public studio, open **Providers → Codex → Connect ChatGPT account**, and authorize the device on the official ChatGPT page. Enable device code login in ChatGPT **Settings → Security** first. The Codex CLI stores the resulting sign-in in the service's private home on the VPS. [Codex device sign-in](https://learn.chatgpt.com/docs/auth#preferred-device-code-authentication-beta)
 
 ## 界面预览 🖥️
 

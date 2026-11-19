@@ -695,26 +695,70 @@ function costsView() {
     })), jobsTable());
 }
 
+const codexLoginPath = "/api/providers/codex/login";
+
+async function connectCodex() {
+  const challenge = await api(codexLoginPath, "POST");
+  if (challenge.status === "connected") {
+    render();
+    return;
+  }
+  const status = node("p", {role: "status"}, tr("Waiting for ChatGPT authorization…", "Aguardando autorização no ChatGPT…"));
+  const instructions = stack(
+    node("p", {}, tr(
+      "Enable device code login in ChatGPT Settings → Security. Then open the official authorization page and enter the code below.",
+      "Ative o login por código de dispositivo em ChatGPT → Configurações → Segurança. Depois abra a página oficial de autorização e informe o código abaixo.")),
+    node("p", {}, node("code", {}, challenge.code)),
+    node("a", {href: challenge.url, target: "_blank", rel: "noopener noreferrer"},
+      tr("Open ChatGPT authorization", "Abrir autorização do ChatGPT")));
+  const dialog = ui("dialog");
+  modal(tr("Connect Codex", "Conectar Codex"), stack(instructions, status), [
+    button(tr("Cancel sign-in", "Cancelar conexão"), async () => {
+      await api(codexLoginPath, "DELETE");
+      dialog.close();
+    }),
+  ]);
+  while (dialog.open && status.isConnected) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    if (!dialog.open || !status.isConnected) break;
+    const {status: currentStatus} = await api(codexLoginPath);
+    if (!dialog.open || !status.isConnected) break;
+    if (currentStatus === "pending") continue;
+    if (currentStatus === "connected") {
+      dialog.close();
+      render();
+      notify(tr("Codex connected with ChatGPT", "Codex conectado ao ChatGPT"));
+      return;
+    }
+    instructions.hidden = true;
+    status.textContent = tr(
+      "Sign-in ended. Close this window and start again if needed.",
+      "A tentativa de conexão terminou. Feche esta janela e inicie outra, se necessário.");
+    return;
+  }
+}
+
 async function providersView() {
   const providers = await api("/api/providers");
   const currency = project?.data.currency || (locale === "pt" ? "BRL" : "USD");
   return stack(title(tr("Providers", "Provedores")), node("p", {class: "muted"}, tr(
-    "Set credentials in the workstation environment. Rates are operator-entered ceilings in " + currency + ".",
-    "Configure as credenciais no ambiente da estação. Os valores são tetos informados pelo operador em " + currency + ".")),
+    "API keys are configured on the host. Rates are operator-entered ceilings in " + currency + ".",
+    "As chaves de API são configuradas no servidor. Os valores são tetos informados pelo operador em " + currency + ".")),
   grid(...providers.map(p => {
     if (p.billing === "subscription") {
       const labels = {
         chatgpt: ["Signed in with ChatGPT", "Conectado com o ChatGPT"],
         missing: ["Codex CLI missing", "Codex CLI ausente"],
-        login_required: ["ChatGPT login required", "Login com ChatGPT necessário"],
+        login_required: ["Disconnected", "Desconectado"],
         unavailable: ["Codex status unavailable", "Status do Codex indisponível"],
         invalid_model: ["Invalid Codex model configuration", "Configuração de modelo Codex inválida"],
       };
       return card(node("h2", {}, tr("Codex · ChatGPT plan", "Codex · assinatura ChatGPT")),
-        row(badge(p.credential_present ? "COMPLETED" : "DRAFT"), tr(...labels[p.status])),
+        node("span", {class: p.credential_present ? "status completed" : "status draft"}, tr(...labels[p.status])),
         small(tr("Research, scripts and translations use your signed-in Codex account.", "Pesquisa, roteiros e traduções usam a sua conta conectada no Codex.")),
-        !p.credential_present && node("p", {}, tr("Check your connection with ", "Verifique a conexão com "),
-          node("code", {}, "codex login status"), tr(" or sign in with ", " ou conecte-se com "), node("code", {}, "codex login")));
+        p.status === "login_required" && (p.device_login
+          ? button(tr("Connect ChatGPT account", "Conectar conta do ChatGPT"), connectCodex, true)
+          : node("p", {}, tr("Sign in on the host with ", "Conecte-se no servidor com "), node("code", {}, "codex login"))));
     }
     const saved = p.configurations[currency];
     const model = select(p.models.map(value => [value, value]), saved?.model);

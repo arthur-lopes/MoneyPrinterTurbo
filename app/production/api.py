@@ -20,7 +20,8 @@ from pydantic import Field, SecretStr, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import media, models as m
+from . import codex_cli, media, models as m
+from .codex_login import DeviceLogin
 from .store import RuleError, encode
 from .workbench import Workbench
 from .worker import Worker
@@ -119,6 +120,7 @@ def create_app(
     sessions = {}
     sessions_lock = Lock()
     limiter = RateLimit()
+    codex_login = DeviceLogin() if public_login else None
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -128,6 +130,8 @@ def create_app(
             yield
         finally:
             worker.stop.set()
+            if codex_login:
+                await codex_login.cancel()
             if worker.thread.is_alive():
                 await run_in_threadpool(worker.thread.join, 2)
 
@@ -434,8 +438,33 @@ def create_app(
         return store.review(actor, pid, body.versions, body)
 
     @app.get("/api/providers")
-    def providers(actor=Depends(authenticated)):
-        return store.providers(actor)
+    def providers(request: Request, actor=Depends(authenticated)):
+        options = store.providers(actor)
+        if is_public(request) and actor == public_login.actor:
+            next(option for option in options if option["provider"] == "codex")[
+                "device_login"
+            ] = True
+        return options
+
+    def codex_operator(request: Request, actor=Depends(authenticated)):
+        if not is_public(request) or actor != public_login.actor:
+            raise HTTPException(404, "Not found")
+
+    @app.post("/api/providers/codex/login", dependencies=[Depends(codex_operator)])
+    async def start_codex_login():
+        try:
+            return await codex_login.start()
+        except codex_cli.CodexError as error:
+            raise HTTPException(502, str(error)) from None
+
+    @app.get("/api/providers/codex/login", dependencies=[Depends(codex_operator)])
+    async def codex_login_status():
+        return {"status": codex_login.status}
+
+    @app.delete("/api/providers/codex/login", dependencies=[Depends(codex_operator)])
+    async def cancel_codex_login():
+        await codex_login.cancel()
+        return {"ok": True}
 
     @app.put("/api/providers")
     def configure(body: m.Provider, actor=Depends(authenticated)):
