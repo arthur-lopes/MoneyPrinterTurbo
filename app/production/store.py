@@ -72,6 +72,20 @@ CREATE TABLE IF NOT EXISTS settlements (
     id INTEGER PRIMARY KEY, job TEXT NOT NULL REFERENCES jobs(id), actor TEXT NOT NULL,
     actual INTEGER NOT NULL, receipt TEXT NOT NULL, created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_keys (
+    id TEXT PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(id), created_by TEXT NOT NULL,
+    label TEXT NOT NULL, scope TEXT NOT NULL, digest TEXT NOT NULL UNIQUE,
+    created REAL NOT NULL, expires REAL NOT NULL, revoked REAL
+);
+CREATE TABLE IF NOT EXISTS edit_proposals (
+    id TEXT PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(id),
+    agent TEXT NOT NULL REFERENCES agent_keys(id), request_id TEXT NOT NULL, request TEXT NOT NULL,
+    plan TEXT NOT NULL, fingerprint TEXT NOT NULL, created REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING', decided REAL, decided_by TEXT, comment TEXT,
+    applied_revision TEXT REFERENCES versions(id), UNIQUE(agent, request_id)
+);
+CREATE INDEX IF NOT EXISTS project_agent_keys ON agent_keys(project, created DESC);
+CREATE INDEX IF NOT EXISTS project_edit_proposals ON edit_proposals(project, created DESC);
 CREATE INDEX IF NOT EXISTS project_versions ON versions(project, slot, seq DESC);
 CREATE INDEX IF NOT EXISTS project_jobs ON jobs(project, created);
 CREATE INDEX IF NOT EXISTS ready_jobs ON jobs(status, available);

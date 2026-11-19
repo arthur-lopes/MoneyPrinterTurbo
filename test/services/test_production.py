@@ -855,6 +855,238 @@ def write_voice(destination):
         output.writeframes(bytes(24000))
 
 
+def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
+    store, actor, pid = sandbox
+    scenes = prepare(store, actor, pid)
+    for sid in scenes:
+        review(store, actor, pid, head(store, pid, f"scene/{sid}"))
+        with store.transaction() as db:
+            take = store.add(
+                db,
+                pid,
+                f"video/{sid}",
+                "video",
+                {"seconds": 4},
+                media=uuid4().hex + ".mp4",
+            )
+            voice = store.add(
+                db,
+                pid,
+                f"voice/{sid}/en-US",
+                "voice",
+                {"seconds": 0.5, "narration": "The verified track."},
+                media=uuid4().hex + ".wav",
+            )
+        review(store, actor, pid, take)
+        review(store, actor, pid, voice)
+    previous = store.snapshot(actor, pid)
+    second_project = store.create(actor, previous["data"])
+    with store.transaction() as db:
+        timeline = store.add(
+            db,
+            pid,
+            "timeline",
+            "timeline",
+            m.Timeline(
+                clips=[m.Clip(scene=sid, seconds=3) for sid in scenes],
+                languages=["en-US"],
+            ).model_dump(),
+        )
+        alternate = store.add(
+            db,
+            pid,
+            f"video/{scenes[0]}",
+            "video",
+            {"seconds": 4},
+            media=uuid4().hex + ".mp4",
+        )
+    review(store, actor, pid, alternate)
+    origin = "https://studio.example.test"
+    app = create_app(
+        store.directory,
+        {"a" * 32: actor, "b" * 32: "intruder"},
+        worker_enabled=False,
+        public_login=PublicLogin(
+            origin,
+            "operator",
+            actor,
+            f"pbkdf2_sha256${PASSWORD_ITERATIONS}${'ab' * 16}${'ab' * 32}",
+        ),
+    )
+    owner = TestClient(
+        app,
+        base_url="http://127.0.0.1",
+        headers={"Authorization": "Bearer " + "a" * 32},
+    )
+    studio = TestClient(app, base_url=origin)
+    p = f"/api/projects/{pid}"
+    agent_url = f"/api/agent/v1/projects/{pid}"
+    grant = owner.post(p + "/agent-access", json={"label": "Timeline assistant"}).json()
+    reader = owner.post(
+        p + "/agent-access", json={"label": "Reader", "scope": "read"}
+    ).json()
+    bearer = {"Authorization": "Bearer " + grant["token"]}
+    read_only = {"Authorization": "Bearer " + reader["token"]}
+    assert all(
+        "token" not in row and "digest" not in row
+        for row in owner.get(p + "/agent-access").json()
+    )
+    assert (
+        studio.get(agent_url, headers=bearer).json()["timeline"]["id"] == timeline["id"]
+    )
+    assert (
+        studio.get(
+            f"/api/agent/v1/projects/{second_project}", headers=bearer
+        ).status_code
+        == 404
+    )
+    assert studio.get(p, headers=bearer).status_code == 401
+    assert owner.get(agent_url).status_code == 401
+    assert (
+        owner.get(
+            p + "/agent-access", headers={"Authorization": "Bearer " + "b" * 32}
+        ).status_code
+        == 404
+    )
+    assert studio.get(agent_url, headers=read_only).status_code == 200
+    path = media.asset_path(store.directory / "assets", alternate["media"])
+    path.write_bytes(b"test-media")
+    assert (
+        studio.get(agent_url + "/media/" + alternate["id"], headers=bearer).content
+        == b"test-media"
+    )
+
+    plan = {
+        "base_revision": timeline["id"],
+        "rationale": "Fix the caption and align the cut.",
+        "changes": [
+            {
+                "scene": scenes[0],
+                "video": alternate["id"],
+                "trim": 0.1,
+                "captions": {"en-US": "The revised subtitle."},
+            }
+        ],
+    }
+    assert (
+        studio.post(
+            agent_url + "/proposals/validate", json=plan, headers=read_only
+        ).status_code
+        == 403
+    )
+    assert studio.post(agent_url + "/proposals/validate", json=plan).status_code == 403
+    assert (
+        studio.post(
+            agent_url + "/proposals/validate",
+            json=plan,
+            headers={**bearer, "Origin": "https://other.example.test"},
+        ).status_code
+        == 403
+    )
+    check = studio.post(agent_url + "/proposals/validate", json=plan, headers=bearer)
+    assert check.status_code == 200
+    assert check.json()["diff"][0]["changes"]["trim"] == {"before": 0, "after": 0.1}
+    assert owner.get(p + "/proposals").json() == []
+    request = dict(
+        plan, request_id=uuid4().hex, expected_fingerprint=check.json()["fingerprint"]
+    )
+    proposal = studio.post(
+        agent_url + "/proposals", json=request, headers=bearer
+    ).json()
+    assert proposal["status"] == "PENDING" and proposal["agent_id"] == grant["id"]
+    assert (
+        studio.post(agent_url + "/proposals", json=request, headers=bearer).json()["id"]
+        == proposal["id"]
+    )
+    assert (
+        studio.post(
+            agent_url + "/proposals",
+            json=dict(request, rationale="Changed"),
+            headers=bearer,
+        ).status_code
+        == 409
+    )
+    assert (
+        studio.get(
+            agent_url + "/proposals/" + proposal["id"], headers=read_only
+        ).status_code
+        == 404
+    )
+    assert owner.get(p + "/timeline").json()["id"] == timeline["id"]
+    decision = p + f"/proposals/{proposal['id']}/decision"
+    assert (
+        studio.post(
+            decision, json={"decision": "apply"}, headers={**bearer, "Origin": origin}
+        ).status_code
+        == 401
+    )
+    assert (
+        studio.post(
+            p + "/quotes", json={"jobs": []}, headers={**bearer, "Origin": origin}
+        ).status_code
+        == 401
+    )
+
+    # An approval with the same cut ID still checks the inputs the agent saw.
+    with store.transaction() as db:
+        newer_voice = store.add(
+            db,
+            pid,
+            f"voice/{scenes[0]}/en-US",
+            "voice",
+            {"seconds": 0.5, "narration": "A new track."},
+            media=uuid4().hex + ".wav",
+        )
+    review(store, actor, pid, newer_voice)
+    stale = dict(request, request_id=uuid4().hex)
+    assert (
+        studio.post(agent_url + "/proposals", json=stale, headers=bearer).status_code
+        == 409
+    )
+    assert owner.post(decision, json={"decision": "apply"}).status_code == 409
+    assert (
+        owner.post(
+            decision, json={"decision": "reject", "comment": "Voice changed."}
+        ).json()["status"]
+        == "REJECTED"
+    )
+    proposal = studio.post(
+        agent_url + "/proposals",
+        json=dict(plan, request_id=uuid4().hex),
+        headers=bearer,
+    ).json()
+    decision = p + f"/proposals/{proposal['id']}/decision"
+    applied = owner.post(
+        decision, json={"decision": "apply", "comment": "Reviewed."}
+    ).json()
+    assert applied["decided_by"] == actor
+    assert (
+        owner.post(decision, json={"decision": "apply"}).json()["applied_revision"]
+        == applied["applied_revision"]
+    )
+    assert owner.post(decision, json={"decision": "reject"}).status_code == 409
+    updated = owner.get(p + "/timeline").json()
+    assert updated["id"] == applied["applied_revision"]
+    assert updated["data"] == check.json()["timeline"]
+    assert len(store.snapshot(actor, pid)["jobs"]) == len(previous["jobs"])
+    assert (
+        studio.get(agent_url + "/proposals/" + proposal["id"], headers=bearer).json()[
+            "status"
+        ]
+        == "APPLIED"
+    )
+    with store.transaction() as db:
+        db.execute("UPDATE agent_keys SET expires=0 WHERE id=?", (reader["id"],))
+    assert studio.get(agent_url, headers=read_only).status_code == 401
+    assert owner.delete(p + "/agent-access/" + grant["id"]).status_code == 200
+    assert studio.get(agent_url, headers=bearer).status_code == 401
+    assert (
+        studio.post(agent_url + "/proposals", json=request, headers=bearer).status_code
+        == 401
+    )
+    assert owner.get(p + "/proposals/" + proposal["id"]).json()["status"] == "APPLIED"
+
+
 def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
     sandbox, monkeypatch
 ):

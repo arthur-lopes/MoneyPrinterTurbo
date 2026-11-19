@@ -42,3 +42,25 @@ Copy the current timeline's `ETag` into `If-Match` when saving, or pass `If-None
 For a subtitle-only correction, set the scene's `clips[].captions` entry to a map such as `{"pt-BR": "Texto corrigido."}`. The existing audio and scene timing are reused. Request `?webvtt=true` on a caption media URL to load the same cues in a browser.
 
 Use `provider: "codex"` for research, scripts, and translations. The quote marks the item `billing: "subscription"` and still requires confirmation. The monetary estimate covers direct API spend. ChatGPT manages its own usage allowance, credits, and automatic reload.
+
+## Project agent API
+
+The owner creates an expiring credential in **Project settings → Agent access**. `read` permits project context and media. `propose` also permits validating and submitting edit plans and reading that credential's receipts. Use `Authorization: Bearer <agent-token>` over HTTPS. The owner manages credentials independently of the project account.
+
+| Method and path | Behavior |
+| --- | --- |
+| GET /api/agent/v1/projects/{project} | Read sources, script, saved timeline, scene IDs, eligible takes and the latest preview. |
+| GET, HEAD /api/agent/v1/projects/{project}/media/{version} | Read project media with the same project credential. |
+| POST /api/agent/v1/projects/{project}/proposals/validate | Compile the candidate against the current timeline and media approvals. Returns a diff and an input fingerprint. |
+| POST /api/agent/v1/projects/{project}/proposals | Submit a validated edit for owner review. Include a unique `request_id` and optionally the validation's `fingerprint` as `expected_fingerprint`. Reuse both the request ID and the payload when retrying. |
+| GET /api/agent/v1/projects/{project}/proposals/{proposal} | Read that credential's submission and the owner's decision. |
+
+In the proposal, set `base_revision` to the ID returned by context and provide a `rationale`. Each entry in `changes` identifies a `scene` and may set `video`, `trim`, `seconds`, or `captions`. Caption entries use the language code and set text or null to restore narration captions. The response has a relative `review_url` for the owner. A changed base revision or changed inputs produces a conflict. Applying the proposal saves a new timeline revision. Rendering uses the existing owner quote and confirmation flow.
+
+```powershell
+# Set MPT_AGENT_TOKEN in the process environment from the issued credential.
+python -m app.production.agent_cli --project-url $projectApi context
+python -m app.production.agent_cli --project-url $projectApi validate edit.json
+python -m app.production.agent_cli --project-url $projectApi submit edit.json
+python -m app.production.agent_cli --project-url $projectApi status $proposalId
+```

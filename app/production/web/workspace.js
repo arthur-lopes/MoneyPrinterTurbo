@@ -17,6 +17,7 @@ const navLabels = {
   scripts: ["Scripts", "Roteiros"], storyboard: ["Storyboard", "Storyboard"], scenes: ["Scene generation", "Geração de cenas"],
   narration: ["Narration", "Narração"], timeline: ["Timeline", "Linha do tempo"], assets: ["Asset library", "Biblioteca"],
   thumbnails: ["Thumbnails", "Miniaturas"],
+  proposals: ["Edit proposals", "Propostas de edição"],
   costs: ["Cost analytics", "Custos"], providers: ["Providers", "Provedores"], settings: ["Settings", "Configurações"],
 };
 const productionStages = {
@@ -37,7 +38,7 @@ const projectNavigation = [
   ["Story", "Pauta e roteiro", ["research", "scripts"]],
   ["Scenes and voice", "Cenas e narração", ["storyboard", "scenes", "narration"]],
   ["Assets and publishing", "Acervo e publicação", ["assets", "thumbnails"]],
-  ["Studio settings", "Operação", ["costs", "providers", "settings"]],
+  ["Studio settings", "Operação", ["proposals", "costs", "providers", "settings"]],
 ];
 const states = {
   APPROVED: ["Approved", "Aprovado"], REJECTED: ["Rejected", "Rejeitado"], DRAFT: ["Draft", "Rascunho"],
@@ -1212,6 +1213,7 @@ function timelineView() {
         ...Object.entries(exported.data.captions || {}).map(([lang, id]) => node("a",
           {href: path("/media/" + id + "?attachment=true")}, lang + " · SRT"))),
       revisions("assembly"), exported && revisions("export")), !rough && outputDetails,
+    current("timeline") && button(tr("Review agent proposals", "Revisar propostas de agentes"), () => navigate("proposals")),
     node("details", {}, node("summary", {}, tr("Audience retention", "Retenção de público")), retentionPanel(assembly)), jobHistory());
   const refreshTimelineState = () => {
     refreshDraftInfo();
@@ -1504,6 +1506,149 @@ function connectProvider(provider, name) {
   ]);
 }
 
+function agentAccessView() {
+  const target = projectId;
+  const panel = node("details", {}, node("summary", {}, tr("Agent access", "Acesso de agentes")));
+  const body = stack();
+  const endpoint = path("/agent-access");
+  const name = input("", {required: true, maxlength: 200});
+  const scope = select([["propose", tr("Read and propose", "Consultar e propor")],
+    ["read", tr("Read only", "Somente consulta")]]);
+  const days = input("7", {type: "number", min: 1, max: 365, required: true});
+  const list = stack();
+  const load = async () => {
+    const keys = await api(endpoint);
+    list.replaceChildren(...keys.map(key => {
+      const enabled = !key.revoked && key.expires * 1000 > Date.now();
+      const permits = key.scope === "propose" ? tr("Read and propose", "Consultar e propor") :
+        tr("Read only", "Somente consulta");
+      const state = key.revoked ? tr("Revoked", "Revogado") : enabled ?
+        tr("Expires", "Expira em") + " " + new Date(key.expires * 1000).toLocaleDateString() : tr("Expired", "Expirado");
+      return row(node("strong", {}, key.label), small(permits + " · " + state),
+        enabled && button(tr("Revoke", "Revogar"), async () => {
+          await api(endpoint + "/" + key.id, "DELETE");
+          await load();
+        }));
+    }));
+  };
+  panel.addEventListener("toggle", () => {
+    if (panel.open) execute(load);
+  });
+  body.append(
+    node("p", {}, tr("Give an agent access to this project's media and timeline. Edit proposals await your decision.",
+      "Dê acesso às mídias e à linha do tempo deste projeto. As propostas de edição aguardam sua decisão.")),
+    node("form", {onsubmit: event => {
+      event.preventDefault();
+      execute(async () => {
+        const key = await api(endpoint, "POST", {label: name.value, scope: scope.value, days: Number(days.value)});
+        name.value = "";
+        const secret = input(key.token, {readonly: true, spellcheck: "false"});
+        modal(tr("Agent credential created", "Credencial de agente criada"), stack(
+          label(tr("Project API", "API do projeto"), input(location.origin + "/api/agent/v1/projects/" + target, {readonly: true})),
+          label(tr("Access token", "Token de acesso"), secret),
+          small(tr("Copy the token now. The studio shows it once.", "Copie o token agora. O estúdio o exibe uma só vez."))), [
+          button(tr("Copy token", "Copiar token"), async () => {
+            await navigator.clipboard.writeText(secret.value);
+            notify(tr("Token copied", "Token copiado"));
+          }, true),
+        ]);
+        ui("dialog").addEventListener("close", () => {
+          if (ui("dialog-content").contains(secret)) ui("dialog-content").replaceChildren();
+        }, {once: true});
+        await load();
+      }, event.submitter);
+    }}, row(label(tr("Agent name", "Nome do agente"), name), label(tr("Permissions", "Permissões"), scope),
+      label(tr("Valid for days", "Validade em dias"), days)),
+    row(node("button", {type: "submit", class: "primary"}, tr("Create credential", "Criar credencial")))),
+    list);
+  panel.append(card(body));
+  return panel;
+}
+
+async function proposalsView() {
+  const target = projectId;
+  const endpoint = path("/proposals");
+  const requested = new URLSearchParams(location.search).get("proposal");
+  const proposals = await api(endpoint);
+  if (requested && !proposals.some(item => item.id === requested)) {
+    proposals.unshift(await api(endpoint + "/" + encodeURIComponent(requested)));
+  }
+  if (projectId !== target) return null;
+  proposals.sort((a, b) => Number(b.id === requested) - Number(a.id === requested));
+  const fields = {video: ["Take", "Tomada"], trim: ["Trim start", "Corte inicial"],
+    seconds: ["Duration", "Duração"], captions: ["Captions", "Legendas"]};
+  const describe = (field, change, side) => {
+    const value = change[side];
+    if (field === "captions") return Object.entries(change.resolved?.[side] || value || {})
+      .map(([lang, text]) => lang + " · " + (text ?? tr("From narration", "Da narração"))).join("\n") ||
+        tr("From narration", "Da narração");
+    if (field === "video") {
+      const ident = change.resolved?.[side] || value;
+      const take = project.versions.find(version => version.id === ident);
+      const text = ident ? "v" + (take?.seq ?? ident.slice(0, 8)) : tr("Current take", "Tomada atual");
+      return take?.url ? node("a", {href: take.url, target: "_blank", rel: "noopener"},
+        tr("Watch take ", "Assistir à tomada ") + text) : text;
+    }
+    return value == null ? tr("Story duration", "Duração do roteiro") : value + " s";
+  };
+  const decide = (proposal, decision) => {
+    const apply = decision === "apply";
+    const comment = area("", {maxlength: 4000});
+    modal(apply ? tr("Apply edit proposal", "Aplicar proposta de edição") : tr("Reject proposal", "Rejeitar proposta"),
+      stack(apply && node("p", {}, tr("The accepted changes become the new saved cut.",
+        "As alterações aceitas viram o novo corte salvo.")),
+      label(tr("Decision note", "Nota da decisão"), comment)), [
+        button(apply ? tr("Apply changes", "Aplicar alterações") : tr("Confirm rejection", "Confirmar rejeição"), async () => {
+          const result = await api(endpoint + "/" + proposal.id + "/decision", "POST", {decision, comment: comment.value});
+          ui("dialog").close();
+          if (projectId === target) {
+            const alreadySaved = timelineDraft && json(current("timeline")?.data) === json(timelineDraft);
+            if (result.applied_revision && alreadySaved) timelineDraft = null;
+            await refresh();
+          }
+        }, true),
+      ]);
+  };
+  const openAppliedCut = () => {
+    const open = () => {
+      timelineDraft = null;
+      navigate("timeline");
+    };
+    const editBase = project.versions.find(version => version.id === timelineBase);
+    if (timelineDraft && json(timelineDraft) !== json(editBase?.data)) {
+      modal(tr("Open the applied cut?", "Abrir o corte aplicado?"),
+        node("p", {}, tr("There are unsaved changes in this tab. Opening the applied cut discards those local edits.",
+          "Há alterações não salvas nesta aba. Abrir o corte aplicado descarta esses ajustes locais.")),
+        [button(tr("Open cut", "Abrir corte"), () => { ui("dialog").close(); open(); }, true)]);
+    } else open();
+  };
+  const folder = proposals.map(proposal => {
+    const pending = proposal.status === "PENDING";
+    const stale = pending && proposal.plan.base_revision !== current("timeline")?.id;
+    const status = {PENDING: ["Awaiting decision", "Aguardando decisão"], APPLIED: ["Applied", "Aplicada"],
+      REJECTED: ["Rejected", "Rejeitada"]}[proposal.status];
+    return card(row(node("h2", {}, proposal.agent), small(tr(...status)),
+      small(tr("Base cut · v", "Corte de origem · v") + proposal.plan.base_seq)),
+      node("p", {}, proposal.plan.rationale),
+      small(tr("Submitted", "Enviada em") + " " + new Date(proposal.created * 1000).toLocaleString()),
+      proposal.plan.diff.map(row => stack(node("h3", {}, row.title),
+        Object.entries(row.changes).map(([field, change]) => stack(node("strong", {}, tr(...fields[field])),
+          node("div", {class: "proposal-diff"}, ["before", "after"].map(side =>
+            node("div", {class: "proposal-value"}, small(side === "after" ? tr("Proposed", "Proposto") : tr("Current", "Atual")),
+              node("p", {}, describe(field, change, side))))))))),
+      stale && node("p", {role: "status"}, tr("The saved cut changed. Request a proposal based on the latest revision.",
+        "O corte salvo mudou. Peça uma proposta baseada na revisão atual.")),
+      pending && row(button(tr("Apply proposal", "Aplicar proposta"), () => decide(proposal, "apply"), true, stale),
+        button(tr("Reject", "Rejeitar"), () => decide(proposal, "reject"))),
+      proposal.decided_by && small(proposal.decided_by + " · " + new Date(proposal.decided * 1000).toLocaleString()),
+      proposal.comment && node("p", {}, proposal.comment),
+      proposal.applied_revision && proposal.applied_revision === current("timeline")?.id &&
+        button(tr("Open applied cut", "Abrir corte aplicado"), openAppliedCut, true));
+  });
+  return stack(title(tr("Edit proposals", "Propostas de edição")),
+    folder.length ? folder : node("p", {}, tr("No edit proposals for this project.", "Ainda não há propostas de edição neste projeto.")));
+}
+
 function settingsView() {
   const data = {...project.data.style};
   const labels = {art_direction: ["Art direction", "Direção de arte"], palette: ["Color palette", "Paleta"],
@@ -1525,7 +1670,7 @@ function settingsView() {
     field.addEventListener("change", () => { defaults[key] = field.value; });
     return label(tr(...names), field);
   });
-  return stack(title(tr("Project settings", "Configurações do projeto")), card(node("h2", {}, tr("Visual style guide", "Guia de estilo visual")),
+  return stack(title(tr("Project settings", "Configurações do projeto")), agentAccessView(), card(node("h2", {}, tr("Visual style guide", "Guia de estilo visual")),
     small(tr("Changes require storyboard review. Reviewed narration remains available when the scene text matches.",
       "Alterações exigem revisão do storyboard. A narração revisada é reaproveitada quando o texto coincide.")),
     grid(...Object.entries(labels).map(([key, names]) => label(tr(...names), input(data[key], {oninput: e => { data[key] = e.target.value; }})))),
@@ -1562,6 +1707,7 @@ function render() {
   if (project) url.searchParams.set("project", project.id);
   else url.searchParams.delete("project");
   url.searchParams.set("view", page);
+  if (page !== "proposals") url.searchParams.delete("proposal");
   if (url.href !== location.href) history.replaceState(null, "", url);
   if (project) {
     const switcher = select(projects.map(p => [p.id, p.data.title]), projectId);
@@ -1590,12 +1736,14 @@ function render() {
   ui("navigation").setAttribute("aria-label", tr("Studio", "Estúdio"));
   ui("navigation").replaceChildren(node("div", {class: "nav-desktop"}, menu),
     node("div", {class: "nav-mobile"}, mobile));
-  if (page === "providers" || page === "catalog") {
+  const asyncViews = {providers: providersView, catalog: catalogView, proposals: proposalsView};
+  if (page in asyncViews) {
     const loadingPage = page;
+    const loadingProject = projectId;
     ui("workspace").replaceChildren(node("p", {}, tr("Loading…", "Carregando…")));
     execute(async () => {
-      const view = await (loadingPage === "catalog" ? catalogView() : providersView());
-      if (page === loadingPage && loggedIn) ui("workspace").replaceChildren(view);
+      const view = await asyncViews[loadingPage]();
+      if (view && page === loadingPage && projectId === loadingProject && loggedIn) ui("workspace").replaceChildren(view);
     });
     return;
   }

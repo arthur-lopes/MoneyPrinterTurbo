@@ -25,6 +25,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 import httpx
 
 from . import (
+    agent,
     adapters,
     codex_cli,
     credentials,
@@ -41,6 +42,9 @@ from .worker import Worker
 
 WEB = Path(__file__).with_name("web")
 COOKIE = "mpt_production_session"
+AGENT_WRITES = re.compile(
+    r"/api/agent/v1/projects/[a-f0-9]{32}/proposals(?:/validate)?"
+)
 MAX_JSON = 1024 * 1024
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 PASSWORD_ITERATIONS = 600_000
@@ -134,6 +138,7 @@ def create_app(
             "Configure a unique production access token with at least 32 ASCII characters"
         )
     store = Workbench(Path(directory))
+    project_agents = agent.AgentProjects(store)
     worker = Worker(store)
     sessions = {}
     sessions_lock = Lock()
@@ -178,7 +183,13 @@ def create_app(
                 if public
                 else f"http://{request.headers.get('host', '')}"
             )
-            if (public or origin) and origin != expected_origin:
+            agent_cli = (
+                not origin
+                and request.method == "POST"
+                and AGENT_WRITES.fullmatch(request.url.path)
+                and agent.bearer_digest(request.headers.get("authorization"))
+            )
+            if (public or origin) and origin != expected_origin and not agent_cli:
                 return JSONResponse({"detail": "Origin forbidden"}, status_code=403)
             if request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"detail": "Origin forbidden"}, status_code=403)
@@ -275,6 +286,19 @@ def create_app(
         if not limiter.hit((actor, request.method in {"GET", "HEAD"}), limit, 60):
             raise HTTPException(429, "Request rate exceeded")
         return actor
+
+    def agent_credential(request: Request):
+        digest = agent.bearer_digest(request.headers.get("authorization"))
+        if not digest:
+            raise HTTPException(401, "Agent authentication required")
+        reading = request.method in {"GET", "HEAD"}
+        if not limiter.hit(
+            ("agent-ip", request.client.host, reading), 480 if reading else 180, 60
+        ):
+            raise HTTPException(429, "Agent request rate exceeded")
+        if not limiter.hit(("agent", digest, reading), 240 if reading else 30, 60):
+            raise HTTPException(429, "Agent request rate exceeded")
+        return digest
 
     @app.get("/", include_in_schema=False)
     def index():
@@ -540,6 +564,53 @@ def create_app(
         if not 1 <= len(body.versions) <= 100:
             raise RuleError("Review 1 to 100 versions", 422)
         return store.review(actor, pid, body.versions, body)
+
+    @app.get("/api/projects/{pid}/agent-access")
+    def list_agent_access(pid: m.Id, actor=Depends(authenticated)):
+        return project_agents.access(actor, pid)
+
+    @app.post("/api/projects/{pid}/agent-access", status_code=201)
+    def issue_agent_access(pid: m.Id, body: agent.Access, actor=Depends(authenticated)):
+        return project_agents.issue(actor, pid, body)
+
+    @app.delete("/api/projects/{pid}/agent-access/{key}")
+    def revoke_agent_access(pid: m.Id, key: m.Id, actor=Depends(authenticated)):
+        project_agents.revoke(actor, pid, key)
+        return {"ok": True}
+
+    @app.get("/api/projects/{pid}/proposals")
+    def review_proposals(pid: m.Id, actor=Depends(authenticated)):
+        return project_agents.proposals(actor, pid)
+
+    @app.get("/api/projects/{pid}/proposals/{proposal}")
+    def review_proposal(pid: m.Id, proposal: m.Id, actor=Depends(authenticated)):
+        return project_agents.proposals(actor, pid, proposal)
+
+    @app.post("/api/projects/{pid}/proposals/{proposal}/decision")
+    def decide_proposal(
+        pid: m.Id, proposal: m.Id, body: agent.Decision, actor=Depends(authenticated)
+    ):
+        return project_agents.decide(actor, pid, proposal, body)
+
+    @app.get("/api/agent/v1/projects/{pid}")
+    def agent_context(pid: m.Id, digest=Depends(agent_credential)):
+        return project_agents.context(pid, digest)
+
+    @app.post("/api/agent/v1/projects/{pid}/proposals/validate")
+    def validate_proposal(
+        pid: m.Id, body: agent.EditPlan, digest=Depends(agent_credential)
+    ):
+        return project_agents.validate(pid, digest, body)
+
+    @app.post("/api/agent/v1/projects/{pid}/proposals")
+    def submit_proposal(
+        pid: m.Id, body: agent.Proposal, digest=Depends(agent_credential)
+    ):
+        return project_agents.submit(pid, digest, body)
+
+    @app.get("/api/agent/v1/projects/{pid}/proposals/{proposal}")
+    def proposal_receipt(pid: m.Id, proposal: m.Id, digest=Depends(agent_credential)):
+        return project_agents.receipt(pid, digest, proposal)
 
     @app.post("/api/projects/{pid}/thumbnails", status_code=201)
     def generate_thumbnails(
@@ -874,6 +945,24 @@ def create_app(
                 media.asset_path(worker.root, name).unlink(missing_ok=True)
                 raise
 
+    def asset_response(asset, version, attachment=False, webvtt=False):
+        if not asset["media"]:
+            raise RuleError("Media not found", 404)
+        path = media.asset_path(worker.root, asset["media"])
+        if not path.is_file():
+            raise RuleError("Media not found", 404)
+        if webvtt:
+            if asset["kind"] != "captions" or path.suffix != ".srt":
+                raise RuleError("Subtitle track not found", 404)
+            return Response(media.webvtt(path), media_type="text/vtt")
+        return FileResponse(
+            path,
+            media_type=media.FORMATS[path.suffix[1:]],
+            filename=f"{asset['kind']}-{version[:8]}{path.suffix}"
+            if attachment
+            else None,
+        )
+
     @app.api_route("/api/projects/{pid}/media/{version}", methods=["GET", "HEAD"])
     def download(
         pid: m.Id,
@@ -885,22 +974,12 @@ def create_app(
         with store.transaction(write=False) as db:
             store.project(db, actor, pid)
             asset = store.asset(db, pid, version)
-            if not asset["media"]:
-                raise RuleError("Media not found", 404)
-            path = media.asset_path(worker.root, asset["media"])
-            if not path.is_file():
-                raise RuleError("Media not found", 404)
-            mime = media.FORMATS[path.suffix[1:]]
-        if webvtt:
-            if asset["kind"] != "captions" or path.suffix != ".srt":
-                raise RuleError("Subtitle track not found", 404)
-            return Response(media.webvtt(path), media_type="text/vtt")
-        return FileResponse(
-            path,
-            media_type=mime,
-            filename=f"{asset['kind']}-{version[:8]}{path.suffix}"
-            if attachment
-            else None,
-        )
+        return asset_response(asset, version, attachment, webvtt)
+
+    @app.api_route(
+        "/api/agent/v1/projects/{pid}/media/{version}", methods=["GET", "HEAD"]
+    )
+    def agent_media(pid: m.Id, version: m.Id, digest=Depends(agent_credential)):
+        return asset_response(project_agents.media(pid, digest, version), version)
 
     return app
