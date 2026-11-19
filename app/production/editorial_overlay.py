@@ -18,7 +18,7 @@ main, .frame, .cue-svg { position: absolute; inset: 0; overflow: hidden; }
 .outline, .route { fill: none; stroke: #ffdaaa; stroke-width: 3.4;
   stroke-linecap: round; stroke-linejoin: round; }
 .route { stroke-width: 4; }
-.end { fill: #ffe8c8; }
+.end { fill: #ffe8c8; opacity: 0; }
 .sym { filter: drop-shadow(0 1px 5px #101420) drop-shadow(0 1px 12px #884828); }
 .reveal { position: absolute; inset: auto auto auto auto; width: max-content;
   max-width: min(28em, 76vw); font: 650 clamp(28px, 4.8vmin, 65px)/1.08 Arial, sans-serif;
