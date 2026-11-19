@@ -4,6 +4,7 @@ import base64
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -11,12 +12,12 @@ import shutil
 from tempfile import TemporaryDirectory
 import time
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
-from . import codex_cli, credentials, media, scene_motion
-from .models import HYPERFRAMES_MODES, Research, Script, Translation
+from . import codex_cli, credentials, media, rough_cut, scene_motion
+from .models import HYPERFRAMES_MODES, Clip, Research, Script, Timeline, Translation
 
 
 OPENAI = "https://api.openai.com/v1"
@@ -30,6 +31,7 @@ class Result:
     data: dict
     path: Path | None = None
     captions: dict[str, Path] = field(default_factory=dict)
+    draft_scenes: list[dict] = field(default_factory=list)
 
 
 class ProviderError(Exception):
@@ -290,39 +292,148 @@ class Local:
             )
             media.sanitize_audio(temporary, output, stop, timeout)
             return Result(_voice_data(payload, "local", spec["model"], output), output)
+        if kind == "rough_cut":
+            return self._rough_cut(payload, scratch, stop, timeout, progress)
         if kind == "assembly":
-            output = scratch / "assembly.mp4"
-            duration = media.render(
-                root, payload["timeline"], output, stop, timeout, progress
+            result = self._assembly(
+                payload["timeline"], root, scratch, stop, timeout, progress
             )
-            captions = {
-                lang: scratch / f"captions-{i}.srt"
-                for i, lang in enumerate(payload["timeline"]["languages"])
-                if payload["timeline"]["subtitles"]
-            }
-            return Result(
-                {
-                    "seconds": duration,
-                    "languages": payload["timeline"]["languages"],
-                    "resolution": payload["timeline"]["resolution"],
-                    "aspect": payload["timeline"]["aspect"],
-                    "watermark": payload["timeline"]["watermark"],
-                    "metadata": payload["timeline"]["metadata"],
-                    "retention": payload["timeline"].get("retention", []),
-                    **(
-                        {"timeline_revision": payload["timeline_revision"]}
-                        if "timeline_revision" in payload
-                        else {}
-                    ),
-                },
-                output,
-                captions,
-            )
+            if "timeline_revision" in payload:
+                result.data["timeline_revision"] = payload["timeline_revision"]
+            return result
         if kind == "export":
             output = scratch / "export.mp4"
             shutil.copyfile(media.asset_path(root, payload["assembly"]), output)
             return Result(payload["metadata"], output)
         raise media.MediaError("Unknown local operation")
+
+    @staticmethod
+    def _assembly(timeline, root, scratch, stop, timeout, progress):
+        output = scratch / "assembly.mp4"
+        duration = media.render(root, timeline, output, stop, timeout, progress)
+        captions = {
+            lang: scratch / f"captions-{i}.srt"
+            for i, lang in enumerate(timeline["languages"])
+            if timeline["subtitles"]
+        }
+        return Result(
+            {
+                "seconds": duration,
+                **{
+                    key: timeline[key]
+                    for key in (
+                        "languages",
+                        "resolution",
+                        "aspect",
+                        "watermark",
+                        "metadata",
+                    )
+                },
+                "retention": timeline.get("retention", []),
+            },
+            output,
+            captions,
+        )
+
+    def _rough_cut(self, payload, scratch, stop, timeout, progress):
+        project = payload["project"]
+        language = project["languages"][0]
+        aspect = project["style"]["aspect"]
+        plan = payload["scenes"]
+        deadline = time.monotonic() + timeout
+        draft_scenes, clips, compiled = [], [], []
+
+        def remaining():
+            if stop():
+                raise media.Stopped()
+            time_left = deadline - time.monotonic()
+            if time_left <= 0:
+                raise media.MediaError("The local draft exceeded its render time limit")
+            return time_left
+
+        for number, entry in enumerate(plan):
+            sid = uuid4().hex
+            scene = dict(entry["scene"])
+            image, video, voice = (
+                scratch / f"{sid}.{ext}" for ext in ("png", "mp4", "wav")
+            )
+            temporary = scratch / "unclean.wav"
+            media.speech(
+                scene["narration"], language, "system", temporary, stop, remaining()
+            )
+            media.sanitize_audio(temporary, voice, stop, remaining())
+            voice_data = _voice_data(
+                {
+                    "narration": scene["narration"],
+                    "language": language,
+                    "voice": "system",
+                },
+                "local",
+                "system",
+                voice,
+            )
+            seconds = (
+                math.ceil(max(scene["seconds"], voice_data["seconds"] + 0.12) * 24) / 24
+            )
+            if seconds > 120:
+                raise media.MediaError(
+                    "Split a section whose narration exceeds two minutes"
+                )
+            scene["seconds"] = seconds
+            rough_cut.frame(entry, number, len(plan), project, image)
+            media.motion(image, video, seconds, aspect, stop, remaining())
+            width, height = (720, 1280) if aspect == "9:16" else (1280, 720)
+            draft_scenes.append(
+                {
+                    "id": sid,
+                    "scene": scene,
+                    "image": image,
+                    "video": video,
+                    "voice": voice,
+                    "video_data": {
+                        "seconds": seconds,
+                        "width": width,
+                        "height": height,
+                        "resolution": 720,
+                        "provider": "local",
+                        "model": "motion",
+                    },
+                    "voice_data": voice_data,
+                }
+            )
+            clip = Clip(scene=sid, seconds=seconds)
+            clips.append(clip)
+            compiled.append(
+                dict(
+                    clip.model_dump(),
+                    video=video.name,
+                    audio={
+                        language: dict(voice_data, media=voice.name),
+                    },
+                )
+            )
+            progress(12 + round(35 * (number + 1) / len(plan)))
+        timeline = Timeline(
+            clips=clips,
+            languages=[language],
+            aspect=aspect,
+            resolution=720,
+            watermark=True,
+            metadata={
+                language: {"title": project["title"], "description": project["topic"]}
+            },
+        ).model_dump()
+        result = self._assembly(
+            dict(timeline, clips=compiled),
+            scratch,
+            scratch,
+            stop,
+            remaining(),
+            lambda value: progress(48 + round(value * 0.45)),
+        )
+        result.data["draft_timeline"] = timeline
+        result.draft_scenes = draft_scenes
+        return result
 
 
 def _video_data(spec):

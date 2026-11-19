@@ -855,6 +855,109 @@ def write_voice(destination):
         output.writeframes(bytes(24000))
 
 
+def test_first_cut_resumes_and_commits_an_editable_watermarked_revision(
+    sandbox, monkeypatch
+):
+    store, actor, pid = sandbox
+    research = review(store, actor, pid, create_research(store, pid))
+    with store.transaction() as db:
+        script = store.script(
+            db,
+            pid,
+            {
+                "sections": [
+                    {
+                        "key": "opening",
+                        "title": "First signal",
+                        "seconds": 1.5,
+                        "narration": "The first signal arrived early.",
+                    }
+                ]
+            },
+            research,
+        )
+    request = m.RequestJob(operation="rough_cut", version=script["id"])
+    with pytest.raises(RuleError, match="script approval"):
+        store.quote(actor, pid, [request])
+    review(store, actor, pid, script)
+    with pytest.raises(RuleError, match="local renderer"):
+        store.quote(actor, pid, [request.model_copy(update={"provider": "openai"})])
+    with pytest.raises(RuleError, match="Project not found"):
+        store.quote("another-operator", pid, [request])
+
+    quote = store.quote(actor, pid, [request])
+    assert quote["total"] == 0 and quote["scene_count"] == 1
+    [jid] = store.authorize(actor, pid, quote["id"], 0)
+    assert store.authorize(actor, pid, quote["id"], 0) == [jid]
+    assert store.claim()["id"] == jid
+    restarted = Workbench(store.directory)
+    restarted.recover()
+    assert restarted.snapshot(actor, pid)["jobs"][0]["status"] == "DRAFT"
+    monkeypatch.setattr(
+        media, "speech", lambda _text, _lang, _voice, output, *_: write_voice(output)
+    )
+    worker = Worker(restarted)
+    assert worker.step()
+    snapshot = restarted.snapshot(actor, pid)
+    assert snapshot["jobs"][0]["status"] == "COMPLETED"
+    assert snapshot["jobs"][0]["actual"] == 0
+    [sid] = snapshot["scenes"]
+    assembly = head(store, pid, "assembly")
+    timeline = head(store, pid, "timeline")
+    assert assembly["data"]["timeline_revision"] == timeline["id"]
+    assert assembly["data"]["watermark"]
+    assert assembly["data"]["languages"] == ["en-US"]
+    assert assembly["data"]["retention"][0]["scene"] == "First signal"
+    with av.open(str(media.asset_path(worker.root, assembly["media"]))) as container:
+        assert next(container.decode(video=0)).height == 720
+        assert len(container.streams.audio) == len(container.streams.subtitles) == 1
+    drafts = [v for v in snapshot["versions"] if v.get("draft_preview")]
+    assert {v["kind"] for v in drafts} == {"scene", "image", "video", "voice"}
+    assert all(v["status"] == "AWAITING_REVIEW" and v["fresh"] for v in drafts)
+    with pytest.raises(RuleError, match="source image first"):
+        review(store, actor, pid, head(store, pid, f"video/{sid}"))
+    with pytest.raises(RuleError, match="scene approval"):
+        store.quote(
+            actor,
+            pid,
+            [
+                m.RequestJob(
+                    operation="assembly",
+                    timeline=m.Timeline(
+                        **dict(timeline["data"], watermark=False),
+                    ),
+                )
+            ],
+        )
+    review(store, actor, pid, assembly)
+    with pytest.raises(RuleError, match="watermarked"):
+        authorize(store, actor, pid, {"operation": "export", "version": assembly["id"]})
+    with pytest.raises(RuleError, match="existing storyboard"):
+        store.quote(actor, pid, [request])
+
+    edited = dict(
+        timeline["data"],
+        clips=[
+            dict(
+                timeline["data"]["clips"][0], captions={"en-US": "The initial signal."}
+            )
+        ],
+    )
+    with store.transaction() as db:
+        revision = store.add(db, pid, "timeline", "timeline", edited)
+    authorize(store, actor, pid, {"operation": "assembly", "version": revision["id"]})
+    assert worker.step()
+    updated = head(store, pid, "assembly")
+    assert updated["data"]["timeline_revision"] == revision["id"]
+    with store.transaction(write=False) as db:
+        caption = store.asset(db, pid, updated["data"]["captions"]["en-US"])
+    assert (
+        media.asset_path(worker.root, caption["media"])
+        .read_text(encoding="utf-8")
+        .endswith("The initial signal.\n")
+    )
+
+
 def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
     store, actor, pid = sandbox
     with store.transaction() as db:

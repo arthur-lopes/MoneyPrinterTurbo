@@ -177,6 +177,19 @@ class Store:
         visited[asset["id"]] = result
         return result
 
+    def rough_cut_output(self, db, asset):
+        if (
+            not asset
+            or not asset["job"]
+            or asset["kind"] not in {"scene", "image", "video", "voice"}
+        ):
+            return False
+        job = db.execute(
+            "SELECT operation FROM jobs WHERE id=? AND project=?",
+            (asset["job"], asset["project"]),
+        ).fetchone()
+        return bool(job and job["operation"] == "rough_cut")
+
     def _dependencies_current(self, db, pid, dependencies, visited=None):
         for dep in dependencies:
             if "timeline_revision" in dep:
@@ -221,7 +234,14 @@ class Store:
                 if (
                     sid not in self.order(db, pid)
                     or not scene
-                    or scene["status"] != "APPROVED"
+                    or (
+                        scene["status"] != "APPROVED"
+                        and not (
+                            dep.get("draft")
+                            and scene["status"] == "AWAITING_REVIEW"
+                            and self.rough_cut_output(db, scene)
+                        )
+                    )
                 ):
                     return False
                 if (
@@ -233,7 +253,10 @@ class Store:
             asset = self.asset(db, pid, dep["id"], missing=True)
             if (
                 not asset
-                or asset["status"] != dep.get("status", "APPROVED")
+                or (
+                    asset["status"] != dep.get("status", "APPROVED")
+                    and not (dep.get("draft") and asset["status"] == "AWAITING_REVIEW")
+                )
                 or not self.fresh(db, asset, visited)
             ):
                 return False
@@ -295,6 +318,13 @@ class Store:
                     or not self.fresh(db, asset)
                 ):
                     raise RuleError("Version has been superseded or its inputs changed")
+                if request.status == "APPROVED" and self.rough_cut_output(db, asset):
+                    approved_inputs = [
+                        {key: value for key, value in dep.items() if key != "draft"}
+                        for dep in asset["dependencies"]
+                    ]
+                    if not self._dependencies_current(db, pid, approved_inputs):
+                        raise RuleError("Approve the storyboard and source image first")
                 db.execute(
                     "INSERT INTO reviews(version,actor,decision,comment,created) VALUES(?,?,?,?,?)",
                     (asset["id"], actor, request.status, request.comment, time.time()),
@@ -391,7 +421,7 @@ class Store:
                 self.scene_version(db, pid, sid, data, script)
             return self.order(db, pid)
 
-    def scene_version(self, db, pid, sid, data, script):
+    def scene_version(self, db, pid, sid, data, script, job=None):
         current = {section["key"]: section for section in script["data"]["sections"]}
         if not set(data.sections) <= current.keys() or len(set(data.sections)) != len(
             data.sections
@@ -414,7 +444,9 @@ class Store:
             ("runway", "gen4_turbo"),
         }:
             raise RuleError("Choose a supported scene provider and model")
-        return self.add(db, pid, f"scene/{sid}", "scene", data.model_dump(), deps)
+        return self.add(
+            db, pid, f"scene/{sid}", "scene", data.model_dump(), deps, job=job
+        )
 
     def edit_scene(self, actor, pid, sid, data):
         with self.transaction() as db:

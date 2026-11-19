@@ -6,8 +6,8 @@ import re
 import time
 from uuid import uuid4
 
-from . import codex_cli, credentials, scene_motion
-from .models import GRAPHIC_MODES, HYPERFRAMES_MODES, Timeline, check_cue_window
+from . import codex_cli, credentials, rough_cut, scene_motion
+from .models import GRAPHIC_MODES, HYPERFRAMES_MODES, Scene, Timeline, check_cue_window
 from .store import ACTIVE, SCENE_OPERATIONS, RuleError, Store, encode, unpack
 
 
@@ -27,6 +27,7 @@ LOCAL_MODELS = {
     "video": "motion",
     "translation": "placeholder",
     "voice": "system",
+    "rough_cut": "local_first_cut",
     "assembly": "ffmpeg",
     "export": "mp4",
 }
@@ -150,7 +151,7 @@ class Workbench(Store):
                 "provider": provider,
                 "model": LOCAL_MODELS[operation],
                 "estimate": 0,
-                "timeout": 1800 if operation == "assembly" else 180,
+                "timeout": 1800 if operation in {"assembly", "rough_cut"} else 180,
                 "interval": 0,
             }
         if provider == "codex":
@@ -188,6 +189,26 @@ class Workbench(Store):
             credential_revision=credentials.revision(key),
         )
 
+    def _timeline_input(self, db, pid, slot, watermark, version=None):
+        asset = self.asset(db, pid, version) if version else self.head(db, pid, slot)
+        draft = bool(
+            watermark
+            and asset
+            and asset["status"] == "AWAITING_REVIEW"
+            and self.rough_cut_output(db, asset)
+        )
+        if (
+            not asset
+            or asset["slot"] != slot
+            or (asset["status"] != "APPROVED" and not draft)
+            or not self.fresh(db, asset)
+        ):
+            raise RuleError(f"Current {slot.split('/')[0]} approval is required")
+        dependency = {"id": asset["id"]}
+        if draft:
+            dependency["draft"] = True
+        return asset, dependency
+
     def _timeline(self, db, pid, project, timeline, deps):
         if not timeline or not set(timeline.languages) <= set(project["languages"]):
             raise RuleError("Choose a timeline and project languages")
@@ -203,20 +224,12 @@ class Workbench(Store):
         )
         for clip in timeline.clips:
             sid = clip.scene
-            scene = self.require(db, pid, f"scene/{sid}")
-            video = (
-                self.asset(db, pid, clip.video)
-                if clip.video
-                else self.require(db, pid, f"video/{sid}")
+            scene, scene_dep = self._timeline_input(
+                db, pid, f"scene/{sid}", timeline.watermark
             )
-            if (
-                video["slot"] != f"video/{sid}"
-                or video["status"] != "APPROVED"
-                or not self.fresh(db, video)
-            ):
-                raise RuleError(
-                    "Timeline clips must be approved matching scene versions"
-                )
+            video, video_dep = self._timeline_input(
+                db, pid, f"video/{sid}", timeline.watermark, clip.video
+            )
             if timeline.resolution == 2160 and (
                 video["data"].get("width", 0) < native_width
                 or video["data"].get("height", 0) < native_height
@@ -232,20 +245,20 @@ class Workbench(Store):
                 raise RuleError(
                     "Clip trim, duration or narration offset exceeds the approved footage"
                 )
-            deps.extend(
-                [{"id": scene["id"]}, {"id": video["id"], "pinned": bool(clip.video)}]
-            )
+            deps.extend([scene_dep, dict(video_dep, pinned=bool(clip.video))])
             entry = dict(
                 clip.model_dump(), seconds=seconds, video=video["media"], audio={}
             )
             for language in timeline.languages:
-                voice = self.require(db, pid, f"voice/{sid}/{language}")
+                voice, voice_dep = self._timeline_input(
+                    db, pid, f"voice/{sid}/{language}", timeline.watermark
+                )
                 duration = voice["data"]["seconds"]
                 if duration + clip.narration_offset > seconds + 0.025:
                     raise RuleError(
                         f"Narration for {scene['data']['title']} ({language}) exceeds the clip. Shorten narration or use longer footage."
                     )
-                deps.append({"id": voice["id"]})
+                deps.append(voice_dep)
                 entry["audio"][language] = {
                     "media": voice["media"],
                     "narration": voice["data"]["narration"],
@@ -322,9 +335,14 @@ class Workbench(Store):
             raise RuleError("An animation is only used for video", 422)
         if request.sources and kind != "research":
             raise RuleError("Sources are only accepted for research", 422)
-        if request.version and kind not in {"script", "assembly", "export"}:
+        if request.version and kind not in {
+            "script",
+            "rough_cut",
+            "assembly",
+            "export",
+        }:
             raise RuleError(
-                "A version override is used for script revision, assembly or export",
+                "A version override is used for script revision, rough cut, assembly or export",
                 422,
             )
         if sid:
@@ -414,6 +432,26 @@ class Workbench(Store):
                 translation = self.require(db, pid, f"translation/{sid}/{language}")
                 deps.append({"id": translation["id"]})
                 payload["narration"] = translation["data"]["narration"]
+        if kind == "rough_cut":
+            if provider != "local":
+                raise RuleError("The initial rough cut uses the local renderer", 422)
+            script = self.require(db, pid, "script")
+            if script["id"] != request.version:
+                raise RuleError("Choose the current approved script")
+            if (
+                self.order(db, pid)
+                or self.head(db, pid, "assembly")
+                or self.head(db, pid, "timeline")
+            ):
+                raise RuleError("Open the existing storyboard or edit instead")
+            research = self.require(db, pid, "research")
+            slot = "assembly"
+            deps.extend(
+                [{"id": script["id"]}, {"order": []}, {"style": context["style"]}]
+            )
+            payload["scenes"] = rough_cut.plan(
+                script["data"]["sections"], research["data"]["sources"]
+            )
         if kind == "assembly":
             timeline = request.timeline
             if request.version:
@@ -519,7 +557,12 @@ class Workbench(Store):
                 "total": total,
                 "currency": project["data"]["currency"],
                 "attempts": len(specs),
-                "scene_count": len({spec["scene"] for spec in specs if spec["scene"]}),
+                "scene_count": len({spec["scene"] for spec in specs if spec["scene"]})
+                + sum(
+                    len(spec["payload"]["scenes"])
+                    for spec in specs
+                    if spec["operation"] == "rough_cut"
+                ),
                 "items": [
                     {
                         key: spec[key]
@@ -925,7 +968,71 @@ class Workbench(Store):
                     safe=safe,
                 )
 
-    def complete(self, job, data, media, captions=None):
+    def _save_rough_cut(self, db, job, data, scenes):
+        pid = job["project"]
+        script = self.require(db, pid, "script")
+        project = job["spec"]["payload"]["project"]
+        language = project["languages"][0]
+        data = dict(data)
+        timeline = Timeline.model_validate(data.pop("draft_timeline"))
+        for position, entry in enumerate(scenes):
+            sid = entry["id"]
+            db.execute(
+                "INSERT INTO scenes(id,project,position) VALUES(?,?,?)",
+                (sid, pid, position),
+            )
+            scene = self.scene_version(
+                db, pid, sid, Scene.model_validate(entry["scene"]), script, job["id"]
+            )
+            scene_dependency = {"id": scene["id"], "draft": True}
+            image = self.add(
+                db,
+                pid,
+                f"image/{sid}",
+                "image",
+                {
+                    "title": scene["data"]["title"],
+                    "prompt": scene["data"]["image_prompt"],
+                    "provider": "local",
+                    "model": "visual_guide",
+                },
+                [scene_dependency],
+                entry["image"],
+                job["id"],
+            )
+            self.add(
+                db,
+                pid,
+                f"video/{sid}",
+                "video",
+                entry["video_data"],
+                [scene_dependency, {"id": image["id"], "draft": True}],
+                entry["video"],
+                job["id"],
+            )
+            self.add(
+                db,
+                pid,
+                f"voice/{sid}/{language}",
+                "voice",
+                entry["voice_data"],
+                [{"speech": [sid, scene["data"]["narration"]], "draft": True}],
+                entry["voice"],
+                job["id"],
+            )
+        saved = self.add(
+            db, pid, "timeline", "timeline", timeline.model_dump(), job=job["id"]
+        )
+        deps = [{"timeline_revision": saved["id"]}]
+        compiled = self._timeline(db, pid, project, timeline, deps)
+        data.update(
+            timeline_revision=saved["id"],
+            retention=compiled["retention"],
+            rough_cut=True,
+        )
+        return data, deps
+
+    def complete(self, job, data, media, captions=None, *, draft_scenes=None):
         with self.transaction() as db:
             pid = job["project"]
             current = self._job(db, pid, job["id"])
@@ -944,6 +1051,9 @@ class Workbench(Store):
                     db, pid, data, self.asset(db, pid, deps[0]["id"]), job["id"]
                 )
             else:
+                if kind == "rough_cut":
+                    data, deps = self._save_rough_cut(db, job, data, draft_scenes)
+                    kind = "assembly"
                 if captions:
                     caption_versions = {
                         lang: self.add(
@@ -1022,6 +1132,8 @@ class Workbench(Store):
                 asset = self.asset(db, pid, row["id"])
                 asset["current"] = asset["slot"] not in seen_slots
                 asset["fresh"] = self.fresh(db, asset, visited)
+                if self.rough_cut_output(db, asset):
+                    asset["draft_preview"] = True
                 seen_slots.add(asset["slot"])
                 versions.append(asset)
             jobs = [
@@ -1094,7 +1206,7 @@ class Workbench(Store):
         images_ready = current_storyboard and image_approvals == len(order)
         research_ready, script_ready = accepted("research"), accepted("script")
         running = db.execute(
-            """SELECT 1 FROM jobs WHERE project=? AND operation IN ('image','video')
+            """SELECT 1 FROM jobs WHERE project=? AND operation IN ('image','video','rough_cut')
             AND status IN ('DRAFT','GENERATING')""",
             (pid,),
         ).fetchone()

@@ -35,6 +35,8 @@ Open [the local production workspace](http://127.0.0.1:8765) and sign in with th
 3. Review clips, approve translations and narration, and save the timeline.
 4. Render a review copy and approve an unwatermarked assembly before exporting the final MP4 and its language-specific SRT files.
 
+For a quick first review, **Generate local draft** turns an approved script into an editable 720p timeline with visual guides, system narration and captions in its original language. The render continues on the server after you close the page. Review or replace the draft material before preparing a final assembly.
+
 Local previews and motion clips work offline. Narration can use installed Windows voices, eSpeak NG, or reviewed audio imports. For AI-assisted text, stills, and narration, set `MPT_PRODUCTION_OPENAI_KEY`. For Runway Gen-4 Turbo video, set `MPT_PRODUCTION_RUNWAY_KEY`. Enable the operation and configure a rate ceiling in **Providers** and a project limit in **Cost analytics**. Keep account-level spending limits in the provider dashboard. Runway output from an additional verified CDN host requires `MPT_PRODUCTION_RUNWAY_OUTPUT_HOSTS`. [OpenAI image API](https://developers.openai.com/api/docs/guides/image-generation), [Runway API pricing](https://docs.dev.runwayml.com/guides/pricing/)
 
 See the [product requirements](PRD.md), [architecture](ARCHITECTURE.md), [API](API_DOCUMENTATION.md), [security scope](SECURITY.md), and [tests](TESTING.md).

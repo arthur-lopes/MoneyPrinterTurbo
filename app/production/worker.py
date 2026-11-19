@@ -83,14 +83,23 @@ class Worker:
                 result = self.adapters[job["provider"]].run(
                     job, self.root, Path(scratch), stopped, progress
                 )
-                if result.path:
-                    names.append(media.publish(self.root, result.path))
-                captions = {}
-                for lang, path in result.captions.items():
-                    names.append(media.publish(self.root, path))
-                    captions[lang] = names[-1]
+
+                def publish(path):
+                    name = media.publish(self.root, path)
+                    names.append(name)
+                    return name
+
+                artifact = publish(result.path) if result.path else None
+                captions = {
+                    lang: publish(path) for lang, path in result.captions.items()
+                }
+                draft_scenes = [
+                    entry
+                    | {key: publish(entry[key]) for key in ("image", "video", "voice")}
+                    for entry in result.draft_scenes
+                ]
                 published = self.store.complete(
-                    job, result.data, names[0] if result.path else None, captions
+                    job, result.data, artifact, captions, draft_scenes=draft_scenes
                 )
         except Deferred as exc:
             self.store.defer(job, exc.delay, exc.progress)

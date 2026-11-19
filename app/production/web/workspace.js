@@ -407,6 +407,41 @@ function projectsView() {
       button(tr("Open project", "Abrir projeto"), () => changeProject(item.id)))))));
 }
 
+function roughCutAction({inEditor = false} = {}) {
+  const script = current("script");
+  if (!ready(script) || project.scenes.length || current("assembly") || current("timeline")) return null;
+  const job = project.jobs.find(item => item.operation === "rough_cut");
+  const active = job && ["DRAFT", "GENERATING"].includes(job.status);
+  const language = project.data.languages[0];
+  return card(node("h2", {}, tr("First editable cut", "Primeiro rascunho editável")),
+    active ? node("progress", {max: 100, value: job.progress,
+      "aria-label": tr("Draft progress", "Progresso do rascunho")}) :
+      node("p", {}, tr(
+        `The approved script becomes a 720p draft with visual guides, system narration and captions in ${language}. The render runs on this server at no provider cost.`,
+        `O roteiro aprovado vira um rascunho em 720p com guias visuais, voz do sistema e legendas em ${language}. A montagem roda no servidor sem custo de provedor.`)),
+    active && small(tr("You can close this page and return to the same render.",
+      "Você pode fechar esta página e voltar à mesma montagem.")),
+    job?.status === "FAILED" && node("p", {role: "status"}, job.last_error),
+    active ? (!inEditor && button(tr("Follow draft", "Acompanhar rascunho"), () => navigate("timeline"), true)) :
+      button(tr("Generate local draft", "Gerar rascunho local"), async () => {
+        const target = projectId;
+        const quotePath = path("/quotes");
+        const estimate = await api(quotePath, "POST",
+          {jobs: [{operation: "rough_cut", provider: "local", version: script.id}]});
+        if (projectId !== target) return;
+        if (estimate.total !== 0 || estimate.items.length !== 1 || estimate.items[0].billing !== "local") {
+          throw new Error(tr("The draft could not be quoted as local work.",
+            "Não foi possível cotar o rascunho como uma tarefa local."));
+        }
+        try {
+          await api(quotePath + "/" + estimate.id + "/authorize", "POST", {maximum: 0, confirmed: true});
+        } finally {
+          if (projectId === target) await refresh(false);
+        }
+        if (projectId === target) navigate("timeline");
+      }, true));
+}
+
 function dashboard() {
   const d = project.data, c = project.costs;
   const values = [
@@ -416,11 +451,12 @@ function dashboard() {
     [tr("Remaining budget", "Orçamento restante"), format(c.remaining)], [tr("Export status", "Estado da exportação"), badge(project.export_status)],
   ];
   const [next, en, pt] = productionStages[project.stage] || productionStages.IDEA;
+  const rough = roughCutAction();
   const needsVoice = project.stage === "VIDEO_ASSEMBLY" && project.scenes.some(scene =>
     project.data.languages.some(language => !ready(current("voice/" + scene + "/" + language))));
   return stack(title(d.title, badge(project.stage)),
     node("p", {}, d.topic), small([d.audience, d.languages.join(", "), d.duration + " s"].join(" · ")),
-    row(button(needsVoice ? tr("Prepare narration", "Preparar narração") : tr(en, pt),
+    rough || row(button(needsVoice ? tr("Prepare narration", "Preparar narração") : tr(en, pt),
       () => navigate(needsVoice ? "narration" : next), true)),
     d.editorial && card(node("h2", {}, d.editorial.id + " · " + d.editorial.series),
       node("p", {}, d.editorial.opening_hook), node("p", {}, d.editorial.visual_plan),
@@ -545,6 +581,7 @@ function scriptsView() {
   }
   fields();
   return stack(title(tr("Scripts", "Roteiros"), assetBadge(item)),
+    roughCutAction(),
     card(small(tr("Pay off the opening question. Give each still a continuous shot and use motion to reveal a useful detail.",
       "Responda à pergunta da abertura. Dê a cada imagem um plano contínuo e use movimento para revelar um detalhe relevante.")),
       row(label(tr("Provider", "Provedor"), provider), label(tr("Instructions", "Instruções"), instructions)),
@@ -857,7 +894,7 @@ function retentionPanel(assembly) {
 
 function timelineView() {
   let saved = current("timeline");
-  if (!timelineDraft) {
+  if (!timelineDraft || (!timelineDraft.clips.length && project.scenes.length)) {
     timelineBase = saved?.id || null;
     const defaultClips = project.scenes.map(scene => ({scene, trim: 0, narration_offset: 0, transition: "cut"}));
     const existing = saved?.data;
@@ -868,6 +905,9 @@ function timelineView() {
     };
   }
   const draft = timelineDraft;
+  const rough = roughCutAction({inEditor: true});
+  const usable = item => ready(item) || (draft.watermark && item?.draft_preview &&
+    item.fresh && item.status === "AWAITING_REVIEW");
   const sequence = node("div", {class: "timeline", role: "group",
     "aria-label": tr("Scene sequence", "Sequência de cenas")});
   const inspector = node("div", {class: "editor-inspector stack"});
@@ -935,7 +975,8 @@ function timelineView() {
         tr("Add a take to this scene to preview it.", "Adicione uma tomada à cena para assistir aqui.");
       if (seekToScene) seek(media, clip?.trim || 0);
     } else {
-      previewInfo.textContent = tr("Rendered assembly · v", "Montagem renderizada · v") + assembly.seq +
+      previewInfo.textContent = (assembly.data.rough_cut ?
+        tr("Local draft · v", "Rascunho local · v") : tr("Rendered assembly · v", "Montagem renderizada · v")) + assembly.seq +
         (renderedRevision ? tr(" · timeline v", " · linha do tempo v") + renderedRevision.seq : "") +
         (assembly.fresh ? "" : tr(" · inputs have changed", " · os insumos mudaram"));
       const chapter = chapters.find(item => item.sceneId === clip?.scene);
@@ -1017,8 +1058,8 @@ function timelineView() {
   }
 
   function clipEditor(clip) {
-    const options = project.versions.filter(item => item.slot === "video/" + clip.scene && ready(item)).map(item => [item.id, "v" + item.seq]);
-    const video = select([["", tr("Current approved clip", "Clipe aprovado atual")], ...options], clip.video || "");
+    const options = project.versions.filter(item => item.slot === "video/" + clip.scene && usable(item)).map(item => [item.id, "v" + item.seq]);
+    const video = select([["", tr("Current take", "Tomada atual")], ...options], clip.video || "");
     if (clip.video && !options.some(([id]) => id === clip.video)) {
       video.append(node("option", {value: clip.video}, tr("Previous take · needs review", "Tomada anterior · requer revisão")));
       video.value = clip.video;
@@ -1056,7 +1097,7 @@ function timelineView() {
           label(tr("Transition", "Transição"), transition), label(tr("Sound effect", "Efeito sonoro"), effect))));
   }
   fields();
-  const resolution = select([[1080, "1080p"], [1440, "1440p"], [2160, "4K"]], draft.resolution);
+  const resolution = select([[720, "720p"], [1080, "1080p"], [1440, "1440p"], [2160, "4K"]], draft.resolution);
   resolution.addEventListener("change", () => { draft.resolution = Number(resolution.value); });
   const aspect = select([["16:9", "16:9"], ["9:16", "9:16"]], draft.aspect);
   aspect.addEventListener("change", () => { draft.aspect = aspect.value; });
@@ -1070,7 +1111,10 @@ function timelineView() {
   row(label(tr("Subtitles", "Legendas"), input("", {type: "checkbox", checked: draft.subtitles,
     onchange: e => { draft.subtitles = e.target.checked; }})),
   label(tr("Draft watermark", "Marca d’água de rascunho"), input("", {type: "checkbox", checked: draft.watermark,
-    onchange: e => { draft.watermark = e.target.checked; }}))),
+    onchange: e => {
+      draft.watermark = e.target.checked;
+      selectClip(selectedClip, false);
+    }}))),
   ...project.data.languages.map(language => {
     const translation = project.scenes.map(sid => current("translation/" + sid + "/" + language)).find(ready);
     const info = draft.metadata[language] || {title: translation?.data.title || project.data.title,
@@ -1093,12 +1137,13 @@ function timelineView() {
       {oninput: e => updateInfo("description", e.target.value)})));
   }));
   refreshDraftInfo();
-  const activeRender = project.jobs.find(job => job.operation === "assembly" && ["DRAFT", "GENERATING"].includes(job.status));
+  const activeRender = project.jobs.find(job =>
+    ["assembly", "rough_cut"].includes(job.operation) && ["DRAFT", "GENERATING"].includes(job.status));
   const missingInput = () => {
-    if (!draft.clips.length || draft.clips.some(clip => !ready(sceneData(clip.scene)))) return "storyboard";
-    if (draft.clips.some(clip => !ready(footage(clip)))) return "scenes";
+    if (!draft.clips.length || draft.clips.some(clip => !usable(sceneData(clip.scene)))) return "storyboard";
+    if (draft.clips.some(clip => !usable(footage(clip)))) return "scenes";
     if (!draft.languages.length) return "output";
-    if (draft.clips.some(clip => draft.languages.some(lang => !ready(current("voice/" + clip.scene + "/" + lang))))) {
+    if (draft.clips.some(clip => draft.languages.some(lang => !usable(current("voice/" + clip.scene + "/" + lang))))) {
       return "narration";
     }
     return null;
@@ -1157,7 +1202,7 @@ function timelineView() {
     missingButton, renderButton, activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
   const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
     node("div", {class: "stack preview-stack"}, panel, row(mode, assetBadge(assembly)), previewInfo), sequence, inspector));
-  const result = stack(title(project.data.title), content, row(draftInfo), controls,
+  const result = stack(title(project.data.title), rough || content, !rough && row(draftInfo), !rough && controls,
     assembly && card(node("h2", {}, tr("Review rendered version", "Revisar versão renderizada")), reviewControls(assembly),
       row(node("a", {href: assembly.url + "?attachment=true"}, tr("Download assembly", "Baixar montagem")),
         !exported?.fresh && !assembly.data.watermark && button(tr("Prepare approved export", "Preparar exportação aprovada"),
@@ -1166,7 +1211,7 @@ function timelineView() {
         tr("Download final MP4", "Baixar MP4 final") : tr("Download previous MP4", "Baixar MP4 anterior")),
         ...Object.entries(exported.data.captions || {}).map(([lang, id]) => node("a",
           {href: path("/media/" + id + "?attachment=true")}, lang + " · SRT"))),
-      revisions("assembly"), exported && revisions("export")), outputDetails,
+      revisions("assembly"), exported && revisions("export")), !rough && outputDetails,
     node("details", {}, node("summary", {}, tr("Audience retention", "Retenção de público")), retentionPanel(assembly)), jobHistory());
   const refreshTimelineState = () => {
     refreshDraftInfo();
@@ -1207,7 +1252,9 @@ function jobsTable() {
           }, true),
         ]);
       };
-      return card(row(small(tr(...(navLabels[job.operation] || [job.operation, job.operation]))), badge(job.status),
+      const operation = job.operation === "rough_cut" ? ["First draft", "Primeiro rascunho"] :
+        navLabels[job.operation] || [job.operation, job.operation];
+      return card(row(small(tr(...operation)), badge(job.status),
         small(job.provider + " · " + job.model + " · " + job.progress + "%")),
       job.last_error && node("p", {}, job.last_error),
       row(cancel && button(tr("Cancel", "Cancelar"), () => mutate(path("/jobs/" + job.id + "/cancel"), "POST")),

@@ -24,7 +24,15 @@ Money = Annotated[int, Field(strict=True, ge=0, le=1_000_000_000)]
 Seconds = Annotated[float, Field(ge=0.1, le=120)]
 Language = Literal["en-US", "pt-BR"]
 Operation = Literal[
-    "research", "script", "image", "video", "translation", "voice", "assembly", "export"
+    "research",
+    "script",
+    "image",
+    "video",
+    "translation",
+    "voice",
+    "rough_cut",
+    "assembly",
+    "export",
 ]
 Review = Literal["APPROVED", "REJECTED", "REVISION_REQUESTED"]
 
@@ -275,7 +283,7 @@ class Timeline(Input):
     clips: list[Clip] = Field(min_length=1, max_length=100)
     languages: list[Language] = Field(min_length=1, max_length=2)
     aspect: Literal["16:9", "9:16"] = "16:9"
-    resolution: Literal[1080, 1440, 2160] = 1080
+    resolution: Literal[720, 1080, 1440, 2160] = 1080
     subtitles: bool = True
     watermark: bool = False
     music: Id | None = None
