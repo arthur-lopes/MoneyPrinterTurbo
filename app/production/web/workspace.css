@@ -6,6 +6,7 @@
   --panel: #1b2327;
   --float: #232d32;
   --line: #344249;
+  --control-border: #758991;
   --accent: #84e0c0;
   --warn: #ffcf91;
   --error: #ffb3ae;
@@ -16,7 +17,7 @@
 body { margin: 0; background: var(--bg); color: var(--ink); }
 button, select, input, textarea { font: inherit; color: inherit; }
 button, select, input, textarea {
-  border: 1px solid var(--line); border-radius: .45rem; background: var(--float); padding: .52rem .72rem;
+  border: 1px solid var(--control-border); border-radius: .45rem; background: var(--float); padding: .52rem .72rem;
 }
 button { cursor: pointer; }
 button:hover { border-color: var(--accent); }
@@ -26,6 +27,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 textarea { min-height: 6rem; resize: vertical; }
 a { color: var(--accent); }
+#skip-main { position: absolute; inset: .7rem auto auto .7rem; z-index: 5;
+  clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
+#skip-main:focus { clip-path: none; width: auto; height: auto; padding: .65rem .85rem;
+  border-radius: .45rem; background: var(--bg); }
 h1, h2, h3, p { margin: 0 0 .65rem; }
 h1 { font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 660; letter-spacing: -.035em; }
 h2 { font-size: 1.24rem; }
@@ -81,6 +86,7 @@ dd { margin: 0 0 .55rem; overflow-wrap: anywhere; }
 dialog { border: 1px solid var(--line); border-radius: .8rem; background: var(--panel); color: var(--ink);
   padding: 1.3rem; width: min(92vw, 44rem); max-height: 86vh; }
 dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.dialog-feedback { color: var(--error); }
 #notices { position: fixed; right: 1rem; bottom: 1rem; max-width: min(90vw, 34rem); z-index: 4; }
 #notices:empty { display: none; }
 #notices p { padding: .8rem 1rem; margin: 0; background: var(--float); border: 1px solid var(--accent); border-radius: .5rem; }
@@ -92,6 +98,9 @@ dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .preview-stage video { max-height: min(48vh, 36rem); }
 .preview-stage p { padding: 1rem; text-align: center; margin: 0; }
 .preview-info { font-size: .86rem; margin: 0; }
+.review-scene-picker { flex: 1 1 15rem; }
+.review-scene-picker select { width: 100%; text-overflow: ellipsis; }
+.review-actions { align-items: end; }
 .review-note { min-width: 0; display: grid; gap: .55rem; border: 1px solid var(--line);
   border-radius: .55rem; background: var(--bg); padding: .7rem; }
 .review-note[aria-current="true"] { border-color: var(--accent); }
@@ -117,6 +126,11 @@ dialog::backdrop { background: rgb(0 0 0 / 65%); }
   .topbar { display: grid; grid-template-columns: minmax(0, 1fr); gap: .55rem; padding: .7rem; }
   #utilities select { flex: 1 0 100%; }
   #utilities button { padding: .35rem .55rem; }
+  #utilities button, .nav-mobile select, main button, main select, main summary, dialog button {
+    min-block-size: 44px;
+  }
+  main summary { padding-block: .65rem; }
+  .review-actions > * { flex-basis: 100%; }
   .editor-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "preview" "sequence" "inspector"; }
   .preview-stage video { max-height: 38vh; }
 }

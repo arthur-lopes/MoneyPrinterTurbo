@@ -98,7 +98,12 @@ const json = value => JSON.stringify(value, null, 2);
 const codexOption = () => ["codex", tr("Codex · ChatGPT plan", "Codex · assinatura ChatGPT")];
 const apiOption = ["openai", "OpenAI API"];
 
-function notify(message) {
+function notify(message, error = false) {
+  const feedback = error && ui("dialog").open && ui("dialog-feedback");
+  if (feedback) {
+    feedback.replaceChildren(node("p", {}, message));
+    return;
+  }
   ui("notices").replaceChildren(node("p", {}, message));
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => ui("notices").replaceChildren(), 6500);
@@ -109,7 +114,7 @@ async function execute(action, control) {
   try {
     await action();
   } catch (error) {
-    notify(error.message || tr("Action failed", "A ação falhou"));
+    notify(error.message || tr("Action failed", "A ação falhou"), true);
   } finally {
     if (control) control.disabled = false;
   }
@@ -139,8 +144,9 @@ async function api(url, method = "GET", data, headers = {}) {
 
 function modal(heading, content, controls = []) {
   const dialog = ui("dialog");
-  ui("dialog-content").replaceChildren(stack(node("h2", {id: "dialog-title"}, heading), content, row(...controls,
-    button(tr("Close", "Fechar"), () => dialog.close()))));
+  const feedback = node("div", {id: "dialog-feedback", class: "dialog-feedback", role: "alert"});
+  ui("dialog-content").replaceChildren(stack(node("h2", {id: "dialog-title"}, heading), content,
+    node("div", {}, feedback, row(...controls, button(tr("Close", "Fechar"), () => dialog.close())))));
   dialog.setAttribute("aria-labelledby", "dialog-title");
   if (!dialog.open) dialog.showModal();
 }
@@ -172,15 +178,18 @@ async function mutate(url, method, data) {
 }
 
 function review(items, status) {
-  const comment = area("", {placeholder: tr("Optional review comment", "Comentário de revisão opcional")});
+  const comment = area("", {maxlength: 2000});
   modal(tr(...states[status]), stack(node("p", {}, tr(
     "Record this decision for " + items.length + " version(s).",
-    "Registrar esta decisão para " + items.length + " versão(ões).")), comment), [
+    "Registrar esta decisão para " + items.length + " versão(ões).")),
+    label(tr("Optional review comment", "Comentário de revisão opcional"), comment)), [
     button(tr("Confirm decision", "Confirmar decisão"), async () => {
-      await mutate(path("/reviews"), "POST", {versions: items.map(item => item.id), status, comment: comment.value});
+      await api(path("/reviews"), "POST", {versions: items.map(item => item.id), status, comment: comment.value});
       selected.clear();
       ui("dialog").close();
-      render();
+      await refresh();
+      ui("workspace").focus();
+      notify(tr("Review decision recorded", "Decisão registrada"));
     }, true),
   ]);
 }
@@ -255,6 +264,21 @@ function seekAssembly(player, seconds) {
   const seek = () => { player.currentTime = Math.max(0, Math.min(seconds, player.duration)); };
   if (player.readyState) seek();
   else player.addEventListener("loadedmetadata", seek, {once: true});
+}
+
+function assemblyScenePicker(assembly, player) {
+  const chapters = (assembly.data.retention || []).filter(chapter =>
+    chapter.scene && Number.isFinite(chapter.start) && chapter.start >= 0 && chapter.start < assembly.data.seconds);
+  if (!chapters.length) return null;
+  const picker = select([["", tr("Choose a scene", "Escolha uma cena")], ...chapters.map((chapter, index) =>
+    [String(index), formatDuration(chapter.start) + " · " + chapter.scene])], "");
+  picker.addEventListener("change", () => {
+    if (picker.value === "") return;
+    seekAssembly(player, chapters[Number(picker.value)].start);
+  });
+  const field = label(tr("Jump to scene", "Ir para a cena"), picker);
+  field.classList.add("review-scene-picker");
+  return field;
 }
 
 function revisions(slot) {
@@ -1344,17 +1368,22 @@ function reviewNotes(assembly, player, items, activeNote) {
     const position = Math.min(Math.round(player.currentTime * 1000), Math.round(assembly.data.seconds * 1000));
     const requestId = crypto.randomUUID().replaceAll("-", "");
     const text = area("", {maxlength: 4000});
+    text.addEventListener("input", () => text.removeAttribute("aria-invalid"));
     modal(tr("Note at ", "Comentário em ") + timecode(position),
       label(tr("Review note", "Comentário de revisão"), text), [
         button(tr("Save note", "Salvar comentário"), async () => {
-          if (!text.value.trim()) throw new Error(tr("Write a review note", "Escreva um comentário de revisão"));
+          if (!text.value.trim()) {
+            text.setAttribute("aria-invalid", "true");
+            text.focus();
+            throw new Error(tr("Write a review note", "Escreva um comentário de revisão"));
+          }
           const saved = await api(endpoint, "POST", {request_id: requestId, position_ms: position, body: text.value});
           items = [...items.filter(item => item.id !== saved.id), saved];
           filter.value = "ALL";
           activeNote = saved.id;
           ui("dialog").close();
           redraw();
-          ui("review-note-" + saved.id)?.focus({preventScroll: true});
+          ui("review-note-" + saved.id)?.focus();
         }, true),
       ]);
     text.focus();
@@ -1386,10 +1415,12 @@ async function deliveryView() {
   const position = marked?.position_ms ?? (/^\d{1,10}$/.test(timestamp || "") ? Number(timestamp) : null);
   if (player && linked && position !== null) seekAssembly(player, position / 1000);
   const feedback = player && annotation && reviewNotes(assembly, player, annotation.notes, marked?.id);
+  const previous = historic || (assembly && (!assembly.fresh || (assembly.data.timeline_revision && !matching)));
   const preview = player && card(node("div", {class: "preview-stage"}, player), row(assetBadge(assembly),
     small(tr("Assembly v", "Montagem v") + assembly.seq),
     matching && small(tr("Saved cut v", "Corte salvo v") + plan.seq),
-    (historic || !matching) && small(tr("Earlier assembly", "Montagem anterior")), feedback?.add));
+    previous && small(tr("Earlier assembly", "Montagem anterior"))),
+    node("div", {class: "row review-actions"}, assemblyScenePicker(assembly, player), feedback?.add));
   const files = (item, currentDelivery) => item && row(
     node("a", {href: item.url + "?attachment=true"}, currentDelivery ?
       tr("Download final MP4", "Baixar MP4 final") : tr("Download existing MP4", "Baixar MP4 existente")),
@@ -1402,8 +1433,8 @@ async function deliveryView() {
   if (historic) return stack(title(tr("Review assembly v", "Revisão da montagem v") + assembly.seq,
     node("a", {href: "/?project=" + target + "&view=delivery"}, tr("Current delivery", "Entrega atual"))),
     preview, feedback?.panel);
-  if (plan.blocked) return stack(heading, card(node("p", {role: "status"}, plan.blocked),
-    files(exported, false)), preview, feedback?.panel);
+  if (plan.blocked) return stack(heading, preview, card(node("p", {role: "status"}, plan.blocked),
+    files(exported, false)), feedback?.panel);
 
   const materialNames = {scene: ["Storyboard", "Storyboard"], image: ["Reference frame", "Quadro de referência"],
     video: ["Take", "Tomada"], voice: ["Narration", "Narração"], translation: ["Translation", "Tradução"],
@@ -1413,6 +1444,9 @@ async function deliveryView() {
   const materialIds = materials => [...new Set(materials.map(item => item.id))];
   const active = project.jobs.find(job => ["assembly", "export"].includes(job.operation) &&
     ["DRAFT", "GENERATING"].includes(job.status));
+  const requestRevision = matching && assembly.status === "AWAITING_REVIEW" && !active &&
+    button(tr("Request changes to this assembly", "Solicitar ajustes nesta montagem"),
+      () => review([assembly], "REVISION_REQUESTED"));
   const chapter = scene => button(tr("Go to scene", "Ir ao trecho"), () => {
     seekAssembly(player, scene.start);
     player.scrollIntoView({block: "nearest"});
@@ -1454,6 +1488,9 @@ async function deliveryView() {
       node("progress", {max: 100, value: active.progress, "aria-label": tr("Delivery progress", "Progresso da entrega")}));
   } else if (delivered) {
     action = files(exported, true);
+  } else if (matching && assembly.status === "REVISION_REQUESTED") {
+    action = stack(node("p", {role: "status"}, tr("Changes requested for this assembly.", "Ajustes solicitados nesta montagem.")),
+      button(tr("Edit the cut", "Editar o corte"), () => navigate("timeline"), true));
   } else if (incomplete.length) {
     action = stack(small(incomplete.length + " " + tr("scenes with materials to review", "cenas com materiais a revisar")),
       button(tr("Approve reviewed materials", "Aprovar materiais revisados"), () => approvals(incomplete), true));
@@ -1475,7 +1512,7 @@ async function deliveryView() {
   }
   const delivery = card(node("h2", {}, tr("Assembly and export", "Montagem e exportação")),
     small([tr("Cut v", "Corte v") + plan.seq, plan.aspect, plan.resolution + "p", plan.languages.join(", ")].join(" · ")),
-    action, !delivered && files(exported, false));
+    action, requestRevision, !delivered && files(exported, false));
   return stack(heading, preview, delivery, feedback?.panel, checklist, assembly && revisions("assembly"), jobHistory());
 }
 
@@ -1933,6 +1970,7 @@ function settingsView() {
 function render() {
   editing = false;
   document.documentElement.lang = locale === "pt" ? "pt-BR" : "en";
+  ui("skip-main").textContent = tr("Skip to main content", "Pular para o conteúdo principal");
   ui("product").textContent = tr("Production", "Produção");
   ui("utilities").replaceChildren(button(locale === "en" ? "Português" : "English", () => {
     locale = locale === "en" ? "pt" : "en";
@@ -1947,12 +1985,15 @@ function render() {
   })] : []));
   ui("sidebar").hidden = !loggedIn;
   if (!loggedIn) {
+    document.title = tr("Sign in", "Entrar") + " · Hyphotenic";
     ui("workspace").replaceChildren(loginView());
     return;
   }
   const globalPages = ["projects", "catalog", "providers"];
   const pages = project ? Object.keys(navLabels) : globalPages;
   if (!pages.includes(page)) page = "projects";
+  const viewLabel = page === "timeline" ? tr("Edit and review", "Editar e revisar") : tr(...navLabels[page]);
+  document.title = [viewLabel, project?.data.title, "Hyphotenic"].filter(Boolean).join(" · ");
   const url = new URL(location.href);
   if (project) url.searchParams.set("project", project.id);
   else url.searchParams.delete("project");
