@@ -1612,6 +1612,20 @@ function timelineView() {
   });
   const previewRecovery = row(previewWarning, retryCut);
   previewRecovery.hidden = true;
+  const trimPosition = input(0, {type: "range", min: 0, max: 0, step: ".01", disabled: true});
+  const trimReadout = node("small", {"aria-hidden": "true"});
+  const trimStatus = node("small", {role: "status"});
+  const markStart = node("button", {type: "button", disabled: true, onclick: () => markTrim("start")},
+    tr("Set start here", "Marcar início aqui"));
+  const markEnd = node("button", {type: "button", disabled: true, onclick: () => markTrim("end")},
+    tr("Set end here", "Marcar fim aqui"));
+  const checkTrim = button(tr("Preview edited scene", "Conferir cena editada"), () => {
+    useScenePreview();
+    mode.focus();
+  });
+  const trimPanel = node("div", {class: "take-trim stack", hidden: true},
+    label(tr("Position in take", "Posição na tomada"), trimPosition),
+    trimReadout, row(markStart, markEnd, checkTrim), trimStatus);
   const previewLanguage = select([]);
   const languageField = label(tr("Preview language", "Idioma da prévia"), previewLanguage);
   languageField.classList.add("scene-preview-language");
@@ -1631,6 +1645,84 @@ function timelineView() {
 
   function referenceImage(video) {
     return video?.dependencies.map(dep => versions.get(dep.id)).find(asset => asset?.kind === "image");
+  }
+
+  function trimContext() {
+    const clip = draft.clips[selectedClip];
+    const source = footage(clip);
+    if (mode.value !== "clip" || !usable(source) || !clipPreview || previewMedia !== clipPreview ||
+        clipPreviewId !== source.id) return null;
+    return {clip, limit: Math.min(source.data.seconds, clipPreview.duration)};
+  }
+
+  function syncTrimPanel() {
+    const context = trimContext();
+    trimPanel.hidden = !context;
+    if (!context) return;
+    const loaded = clipPreview.readyState >= 1 && Number.isFinite(context.limit) && context.limit > 0;
+    trimPosition.disabled = !loaded;
+    markStart.disabled = markEnd.disabled = !loaded || clipPreview.seeking;
+    if (!loaded) return;
+    const at = Math.min(context.limit, clipPreview.currentTime);
+    trimPosition.max = (Math.floor(context.limit * 100) / 100).toFixed(2);
+    trimPosition.value = at.toFixed(2);
+    const position = timecode(Math.round(at * 1000));
+    trimPosition.setAttribute("aria-valuetext", position);
+    const clip = context.clip;
+    const end = clip.trim + (clip.seconds ?? sceneData(clip.scene)?.data.seconds ?? 0);
+    trimReadout.textContent = position + tr(" · Selected range ", " · Trecho selecionado ") +
+      timecode(Math.round(clip.trim * 1000)) + " – " + timecode(Math.round(end * 1000));
+  }
+
+  trimPosition.addEventListener("input", event => {
+    event.stopPropagation();
+    const context = trimContext();
+    if (!context) return;
+    clipPreview.pause();
+    trimStatus.textContent = "";
+    seek(clipPreview, Number(trimPosition.value));
+  });
+  trimPosition.addEventListener("change", event => event.stopPropagation());
+
+  function markTrim(point) {
+    const context = trimContext();
+    if (!context || clipPreview.seeking || !Number.isFinite(context.limit)) return;
+    clipPreview.pause();
+    const {clip, limit} = context;
+    const at = Math.min(limit, Number(clipPreview.currentTime.toFixed(2)));
+    const start = point === "start" ? at : clip.trim;
+    const end = point === "end" ? at : clip.trim + (clip.seconds ?? sceneData(clip.scene)?.data.seconds ?? 0);
+    const seconds = Number((end - start).toFixed(3));
+    if (!Number.isFinite(seconds) || seconds < .1 || seconds > 120 || start > 120 || end > limit + .01 ||
+        clip.narration_offset >= seconds) {
+      trimStatus.textContent = tr("Choose a point that leaves a valid range within the take.",
+        "Escolha um ponto que deixe um trecho válido dentro da tomada.");
+      return;
+    }
+    const narration = draft.languages.find(language => {
+      const voice = current("voice/" + clip.scene + "/" + language);
+      return usable(voice) && voice.data.seconds + clip.narration_offset > seconds + .025;
+    });
+    if (narration) {
+      trimStatus.textContent = tr("This range would cut the narration", "Esse trecho cortaria a narração") + " (" + narration + ").";
+      return;
+    }
+    if (start !== clip.trim || seconds !== (clip.seconds ?? sceneData(clip.scene)?.data.seconds)) {
+      clip.trim = start;
+      clip.seconds = seconds;
+      editing = true;
+      selectClip(selectedClip, false);
+      refreshClipDuration(clip);
+      keepDraft();
+      refreshTimelineState();
+    }
+    trimStatus.textContent = (point === "start" ? tr("Start set at ", "Início marcado em ") : tr("End set at ", "Fim marcado em ")) +
+      timecode(Math.round(at * 1000)) + ".";
+  }
+
+  function refreshClipDuration(clip) {
+    const duration = sequence.children[selectedClip]?.querySelector("[data-clip-duration]");
+    if (duration) duration.textContent = formatDuration(clip.seconds ?? sceneData(clip.scene)?.data.seconds ?? 0);
   }
 
   function clearPreviewWarning() {
@@ -1809,6 +1901,9 @@ function timelineView() {
           clipPreview.setAttribute("aria-label", tr("Selected take", "Tomada selecionada"));
           const poster = referenceImage(source);
           if (poster?.url) clipPreview.poster = poster.url;
+          for (const event of ["loadedmetadata", "timeupdate", "seeking", "seeked", "emptied", "error"]) {
+            clipPreview.addEventListener(event, syncTrimPanel);
+          }
         }
       }
       media = clipPreview;
@@ -1816,7 +1911,10 @@ function timelineView() {
         "Source take · assembly audio, subtitles and transitions appear after rendering.",
         "Tomada original · áudio da montagem, legendas e transições aparecem após renderizar.") :
         tr("Add a take to this scene to preview it.", "Adicione uma tomada à cena para assistir aqui.");
-      if (seekToScene) seek(media, clip?.trim || 0);
+      if (resumePosition?.view === "clip" && resumePosition.scene === clip?.scene) {
+        seek(media, resumePosition.offset);
+        resumePosition = null;
+      } else if (seekToScene) seek(media, clip?.trim || 0);
     } else {
       media = renderedPlayer();
       previewInfo.textContent = (assembly.data.rough_cut ?
@@ -1826,7 +1924,10 @@ function timelineView() {
       const chapter = chapters.find(item => item.sceneId === clip?.scene);
       if (seekToScene && chapter) seek(media, chapter.start);
     }
-    if (media === previewMedia && panel.hasChildNodes()) return;
+    if (media === previewMedia && panel.hasChildNodes()) {
+      syncTrimPanel();
+      return;
+    }
     if (previewMedia === scenePlayer.element) {
       clearTimeout(sceneTimer);
       sceneRequest++;
@@ -1836,6 +1937,7 @@ function timelineView() {
     panel.replaceChildren(media || node("p", {class: "muted"},
       tr("Your preview will appear here.", "Sua prévia vai aparecer aqui.")));
     previewMedia = media;
+    syncTrimPanel();
   }
 
   function captionEditor(clip) {
@@ -1879,6 +1981,7 @@ function timelineView() {
       reviewOffset = null;
     }
     selectedClip = index;
+    if (seekToScene) trimStatus.textContent = "";
     const focused = sequence.contains(document.activeElement) ? document.activeElement : null;
     Array.from(sequence.children).forEach((control, i) => {
       control.setAttribute("aria-pressed", String(i === index));
@@ -1898,7 +2001,7 @@ function timelineView() {
       return node("button", {type: "button", onclick: () => selectClip(i, true)},
         image?.url && node("img", {src: image.url, alt: "", loading: "lazy", decoding: "async"}),
         node("span", {}, scene?.data.title || item.scene),
-        small(formatDuration(item.seconds ?? scene?.data.seconds ?? 0)));
+        node("small", {"data-clip-duration": ""}, formatDuration(item.seconds ?? scene?.data.seconds ?? 0)));
     }));
     selectClip(selectedClip, false);
     if (focus) sequence.children[selectedClip]?.focus();
@@ -1908,6 +2011,7 @@ function timelineView() {
     explicitMode = mode.value;
     openingCut = false;
     clearPreviewWarning();
+    trimStatus.textContent = "";
     showPreview(true);
   });
   mode.addEventListener("input", event => event.stopPropagation());
@@ -1922,18 +2026,35 @@ function timelineView() {
     const options = project.versions.filter(item => item.slot === "video/" + clip.scene && usable(item)).map(item => [item.id, "v" + item.seq]);
     const video = select([["", tr("Current take", "Tomada atual")], ...options], clip.video || "");
     video.id = "timeline-field-take";
+    const canTrim = () => usable(footage(clip)) && footage(clip)?.url;
+    const openTrim = button(tr("Trim using the take", "Ajustar pela imagem"), () => {
+      explicitMode = mode.value = "clip";
+      openingCut = false;
+      trimStatus.textContent = "";
+      clearPreviewWarning();
+      showPreview(true);
+      mode.focus();
+    }, false, !canTrim());
     if (clip.video && !options.some(([id]) => id === clip.video)) {
       video.append(node("option", {value: clip.video}, tr("Previous take · needs review", "Tomada anterior · requer revisão")));
       video.value = clip.video;
     }
     video.addEventListener("change", () => {
       clip.video = video.value || null;
-      useScenePreview();
+      openTrim.disabled = !canTrim();
+      if (mode.value === "clip") {
+        trimStatus.textContent = "";
+        showPreview(true);
+      } else useScenePreview();
     });
     const numeric = (key, en, pt, optional = false) => label(tr(en, pt), input(clip[key] ?? "", {
-      id: "timeline-field-" + key, type: "number", min: 0, step: ".05", oninput: e => {
+      id: "timeline-field-" + key, type: "number", min: 0, step: key === "narration_offset" ? ".05" : "any", oninput: e => {
         clip[key] = optional && !e.target.value ? null : Number(e.target.value);
-        useScenePreview();
+        if (key === "seconds") refreshClipDuration(clip);
+        if (mode.value === "clip") {
+          trimStatus.textContent = "";
+          syncTrimPanel();
+        } else useScenePreview();
       },
     }));
     const transition = select([["cut", tr("Cut", "Corte")], ["fade", tr("Fade to black", "Fade para preto")]], clip.transition);
@@ -1955,6 +2076,7 @@ function timelineView() {
       node("div", {class: "clip-timing"},
         numeric("trim", "Trim start (s)", "Corte inicial (s)"),
         numeric("seconds", "Clip length (s)", "Duração do clipe (s)", true)),
+      row(openTrim),
       row(button(tr("Move earlier", "Mover antes"), () => swap(-1), false, selectedClip === 0),
         button(tr("Move later", "Mover depois"), () => swap(1), false, selectedClip >= draft.clips.length - 1)),
       captionEditor(clip),
@@ -2168,8 +2290,10 @@ function timelineView() {
     const selection = fieldId && active instanceof HTMLTextAreaElement ?
       [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
     const captionLanguage = fieldId?.startsWith("timeline-field-caption") && ui("timeline-field-caption-language").value;
-    if (restoreEditingFocus && stillOpen && interactive()) {
-      const position = scenePlayer.position();
+    if (restoreEditingFocus && stillOpen) {
+      const position = interactive() ? scenePlayer.position() : trimContext() && {
+        scene: draft.clips[selectedClip].scene, offset: clipPreview.currentTime,
+      };
       if (position) editorPreview = {...editorPreview, position: {...position, view: mode.value}};
     }
     render();
@@ -2227,7 +2351,7 @@ function timelineView() {
       navigate("delivery");
     })));
   const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
-    node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo, previewRecovery,
+    node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo, trimPanel, previewRecovery,
       reviewReference),
     sequence, inspector));
   const loadSaved = button(tr("Open saved cut", "Abrir corte salvo"), loadSavedTimeline);
