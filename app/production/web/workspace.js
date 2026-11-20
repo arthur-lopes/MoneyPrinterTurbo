@@ -2588,6 +2588,8 @@ async function proposalsView() {
     return card(row(node("h2", {}, proposal.agent), small(tr(...status)),
       small(tr("Base cut · v", "Corte de origem · v") + proposal.plan.base_seq)),
       node("p", {}, proposal.plan.rationale),
+      proposal.plan.review_note && node("a", {href: proposal.plan.review_note.url},
+        tr("Open source comment at ", "Abrir comentário de origem em ") + timecode(proposal.plan.review_note.position_ms)),
       small(tr("Submitted", "Enviada em") + " " + new Date(proposal.created * 1000).toLocaleString()),
       proposal.plan.diff.map(row => stack(node("h3", {}, row.title),
         Object.entries(row.changes).map(([field, change]) => stack(node("strong", {}, tr(...fields[field])),

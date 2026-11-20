@@ -103,12 +103,14 @@ The owner creates an expiring credential in **Project settings → Agent access*
 | --- | --- |
 | GET /api/agent/v1/projects/{project} | Read sources, script, saved timeline, scene IDs, eligible takes and the latest preview. |
 | GET, HEAD /api/agent/v1/projects/{project}/media/{version} | Read project media with the same project credential. |
-| GET /api/agent/v1/projects/{project}/assemblies/{version}/notes | Read timestamped review notes for an assembly in the granted project. |
+| GET /api/agent/v1/projects/{project}/assemblies/{version}/notes | Read timestamped review notes for an assembly in the granted project, including the rendered scene and its relative timestamp when available. |
 | POST /api/agent/v1/projects/{project}/proposals/validate | Compile the candidate against the current timeline and media approvals. Returns a diff and an input fingerprint. |
 | POST /api/agent/v1/projects/{project}/proposals | Submit a validated edit for owner review. Include a unique `request_id` and optionally the validation's `fingerprint` as `expected_fingerprint`. Reuse both the request ID and the payload when retrying. |
 | GET /api/agent/v1/projects/{project}/proposals/{proposal} | Read that credential's submission and the owner's decision. |
 
 In the proposal, set `base_revision` to the ID returned by context and provide a `rationale`. Each entry in `changes` identifies a `scene` and may set `video`, `trim`, `seconds`, or `captions`. Caption entries use the language code and set text or null to restore narration captions. The response has a relative `review_url` for the owner. A changed base revision or changed inputs produces a conflict. Applying the proposal saves a new timeline revision. Rendering uses the existing owner quote and confirmation flow.
+
+Each agent note returns a `scene` object with `id`, `title`, `start_ms`, `end_ms`, and `offset_ms`. It is null when the rendered scene cannot be identified. For a proposal that addresses a note, pass its ID in the optional `review_note` field. The note must belong to an assembly of the proposal's base revision with current inputs, and the proposal must edit the scene referenced by the note. The owner and the proposal receipt can open the original timestamp through `plan.review_note.url`.
 
 ```powershell
 # Set MPT_AGENT_TOKEN in the process environment from the issued credential.

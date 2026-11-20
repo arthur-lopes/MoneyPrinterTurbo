@@ -41,6 +41,7 @@ class ClipEdit(m.Input):
 class EditPlan(m.Input):
     base_revision: m.Id
     rationale: m.Text
+    review_note: m.Id | None = None
     changes: list[ClipEdit] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
@@ -208,7 +209,9 @@ class AgentProjects:
     def notes(self, pid, digest, version):
         with self.store.transaction(write=False) as db:
             self._grant(db, pid, digest)
-            return review_notes.list_notes(self.store, db, pid, version)
+            return review_notes.list_notes(
+                self.store, db, pid, version, include_scene=True
+            )
 
     def validate(self, pid, digest, request):
         with self.store.transaction(write=False) as db:
@@ -221,6 +224,13 @@ class AgentProjects:
         base = self.store.head(db, pid, "timeline")
         if not base or base["id"] != request.base_revision:
             raise RuleError("The base revision changed. Read the latest timeline.")
+        anchor = (
+            review_notes.proposal_anchor(
+                self.store, db, pid, request.review_note, base["id"]
+            )
+            if request.review_note
+            else None
+        )
         timeline = m.Timeline.model_validate(base["data"])
         clips = {clip.scene: clip.model_dump() for clip in timeline.clips}
         diff = []
@@ -282,6 +292,8 @@ class AgentProjects:
             clips[edit.scene] = after
         if not diff:
             raise RuleError("Propose at least one change to the saved timeline", 422)
+        if anchor and not any(item["scene"] == anchor["scene"]["id"] for item in diff):
+            raise RuleError("Edit the scene referenced by the review note", 422)
         candidate = m.Timeline.model_validate(
             timeline.model_dump() | {"clips": list(clips.values())}
         )
@@ -294,6 +306,8 @@ class AgentProjects:
             "timeline": candidate.model_dump(),
             "rationale": request.rationale,
         }
+        if anchor:
+            plan["review_note"] = anchor
         fingerprint = hashlib.sha256(
             encode({"plan": plan, "inputs": inputs}).encode("utf-8")
         ).hexdigest()

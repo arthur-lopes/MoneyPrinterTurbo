@@ -956,9 +956,79 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
         == b"test-media"
     )
 
+    with store.transaction() as db:
+        rendered = {
+            "timeline_revision": timeline["id"],
+            "seconds": 3 * len(scenes),
+            "languages": ["en-US"],
+            "retention": [
+                {
+                    "scene": f"Scene {i + 1}",
+                    "video": store.head(db, pid, f"video/{sid}")["id"],
+                    "start": 3 * i,
+                    "end": 3 * (i + 1),
+                }
+                for i, sid in enumerate(scenes)
+            ],
+        }
+        assembly = store.add(
+            db,
+            pid,
+            "assembly",
+            "assembly",
+            rendered,
+            [{"id": store.head(db, pid, f"voice/{scenes[0]}/en-US")["id"]}],
+            media=uuid4().hex + ".mp4",
+        )
+        earlier = store.add(
+            db,
+            pid,
+            "assembly",
+            "assembly",
+            dict(rendered, timeline_revision=uuid4().hex),
+            media=uuid4().hex + ".mp4",
+        )
+
+    def note_on(item, position):
+        return (
+            owner.post(
+                p + f"/assemblies/{item['id']}/notes",
+                json={
+                    "request_id": uuid4().hex,
+                    "position_ms": position,
+                    "body": "Check the wording.",
+                },
+            )
+            .raise_for_status()
+            .json()
+        )
+
+    note = note_on(assembly, 1250)
+    boundary = note_on(assembly, 3000)
+    ending = note_on(assembly, 3000 * len(scenes))
+    old_note = note_on(earlier, 1250)
+    note_listing = (
+        studio.get(agent_url + f"/assemblies/{assembly['id']}/notes", headers=read_only)
+        .raise_for_status()
+        .json()
+    )
+    anchored = {item["id"]: item["scene"] for item in note_listing["notes"]}
+    assert anchored[note["id"]] == {
+        "id": scenes[0],
+        "title": "Scene 1",
+        "start_ms": 0,
+        "end_ms": 3000,
+        "offset_ms": 1250,
+    }
+    assert anchored[boundary["id"]]["id"] == scenes[1]
+    assert anchored[boundary["id"]]["offset_ms"] == 0
+    assert anchored[ending["id"]]["id"] == scenes[-1]
+    assert anchored[ending["id"]]["offset_ms"] == 3000
+
     plan = {
         "base_revision": timeline["id"],
         "rationale": "Fix the caption and align the cut.",
+        "review_note": note["id"],
         "changes": [
             {
                 "scene": scenes[0],
@@ -983,9 +1053,29 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
         ).status_code
         == 403
     )
+    validate_url = agent_url + "/proposals/validate"
+    for ident, expected in [
+        (old_note["id"], 409),
+        (boundary["id"], 422),
+        (uuid4().hex, 404),
+    ]:
+        rejected = studio.post(
+            validate_url, json=dict(plan, review_note=ident), headers=bearer
+        )
+        assert rejected.status_code == expected
+    unlinked_plan = {key: value for key, value in plan.items() if key != "review_note"}
+    unlinked = (
+        studio.post(validate_url, json=unlinked_plan, headers=bearer)
+        .raise_for_status()
+        .json()
+    )
+    assert "review_note" not in unlinked
     check = studio.post(agent_url + "/proposals/validate", json=plan, headers=bearer)
     assert check.status_code == 200
     assert check.json()["diff"][0]["changes"]["trim"] == {"before": 0, "after": 0.1}
+    assert check.json()["review_note"] == {
+        key: note[key] for key in ("id", "assembly", "position_ms", "url")
+    } | {"scene": anchored[note["id"]]}
     assert owner.get(p + "/proposals").json() == []
     request = dict(
         plan, request_id=uuid4().hex, expected_fingerprint=check.json()["fingerprint"]
@@ -994,6 +1084,7 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
         agent_url + "/proposals", json=request, headers=bearer
     ).json()
     assert proposal["status"] == "PENDING" and proposal["agent_id"] == grant["id"]
+    assert proposal["plan"]["review_note"]["url"] == note["url"]
     assert (
         studio.post(agent_url + "/proposals", json=request, headers=bearer).json()["id"]
         == proposal["id"]
@@ -1038,6 +1129,9 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
             media=uuid4().hex + ".wav",
         )
     review(store, actor, pid, newer_voice)
+    outdated = studio.post(validate_url, json=plan, headers=bearer)
+    assert outdated.status_code == 409
+    assert "assembly's inputs changed" in outdated.json()["detail"]
     stale = dict(request, request_id=uuid4().hex)
     assert (
         studio.post(agent_url + "/proposals", json=stale, headers=bearer).status_code
@@ -1052,7 +1146,7 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     )
     proposal = studio.post(
         agent_url + "/proposals",
-        json=dict(plan, request_id=uuid4().hex),
+        json=dict(unlinked_plan, request_id=uuid4().hex),
         headers=bearer,
     ).json()
     decision = p + f"/proposals/{proposal['id']}/decision"

@@ -38,19 +38,80 @@ def assembly_asset(store, db, pid, version):
     return assembly
 
 
-def list_notes(store, db, pid, version):
+def list_notes(store, db, pid, version, *, include_scene=False):
     assembly = assembly_asset(store, db, pid, version)
+    notes = [
+        serialize(pid, row)
+        for row in db.execute(
+            NOTE_ROWS + " ORDER BY n.position_ms,n.created,n.id",
+            (pid, version),
+        )
+    ]
+    if include_scene and notes:
+        windows = scene_windows(store, db, pid, assembly)
+        for note in notes:
+            note["scene"] = scene_at(windows, note["position_ms"])
     return {
         "assembly": version,
         "revision": assembly["data"].get("timeline_revision"),
-        "notes": [
-            serialize(pid, row)
-            for row in db.execute(
-                NOTE_ROWS + " ORDER BY n.position_ms,n.created,n.id",
-                (pid, version),
-            )
-        ],
+        "notes": notes,
     }
+
+
+def scene_windows(store, db, pid, assembly):
+    data = assembly["data"]
+    entries = data.get("retention") or []
+    windows = []
+    for index, entry in enumerate(entries):
+        take = store.asset(db, pid, entry.get("video"), missing=True)
+        if not take or not take["slot"].startswith("video/"):
+            continue
+        start = round(entry.get("start", 0) * 1000)
+        end = round(entry.get("end", 0) * 1000)
+        if end > start:
+            windows.append(
+                {
+                    "id": take["slot"].removeprefix("video/"),
+                    "title": entry.get("scene", ""),
+                    "start_ms": start,
+                    "end_ms": end,
+                    "last": index == len(entries) - 1,
+                }
+            )
+    return windows
+
+
+def scene_at(windows, position):
+    for window in windows:
+        end = window["end_ms"]
+        if window["start_ms"] <= position and (
+            position < end or (window["last"] and position == end)
+        ):
+            return {
+                **{key: value for key, value in window.items() if key != "last"},
+                "offset_ms": position - window["start_ms"],
+            }
+    return None
+
+
+def proposal_anchor(store, db, pid, ident, revision):
+    row = db.execute(
+        "SELECT id,assembly,position_ms FROM review_notes WHERE project=? AND id=?",
+        (pid, ident),
+    ).fetchone()
+    if not row:
+        raise RuleError("Review note not found", 404)
+    assembly = assembly_asset(store, db, pid, row["assembly"])
+    if assembly["data"].get("timeline_revision") != revision:
+        raise RuleError("The review note belongs to a different timeline revision")
+    if not store.fresh(db, assembly):
+        raise RuleError(
+            "The reviewed assembly's inputs changed. Review a current assembly."
+        )
+    scene = scene_at(scene_windows(store, db, pid, assembly), row["position_ms"])
+    if not scene:
+        raise RuleError("The review note could not be located in a rendered scene", 422)
+    return serialize(pid, row) | {"scene": scene}
 
 
 def serialize(pid, row):
