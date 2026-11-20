@@ -44,9 +44,9 @@ const productionStages = {
   FINAL_REVIEW: ["delivery", "Review delivery", "Revisar entrega"],
   EXPORT: ["delivery", "View delivery", "Ver entrega"],
 };
-const projectNavigation = [
-  ["Story", "Pauta e roteiro", ["research", "scripts"]],
-  ["Scenes and voice", "Cenas e narração", ["storyboard", "scenes", "narration"]],
+const globalPages = ["projects", "catalog", "channel", "providers"];
+const sceneNavigation = ["Scenes and voice", "Cenas e narração", ["storyboard", "scenes", "narration"]];
+const projectTools = [
   ["Assets and publishing", "Acervo e publicação", ["assets", "thumbnails", "youtube", "analysis"]],
   ["Studio settings", "Operação", ["proposals", "costs", "providers", "settings"]],
 ];
@@ -168,12 +168,55 @@ async function refresh(redraw = true) {
   if (projectId !== target) return;
   projects = list;
   project = snapshot;
+  if (target && !project) {
+    projectId = null;
+    sessionStorage.removeItem("mpt-production-project");
+  }
   if (redraw) render();
 }
 
-async function changeProject(id, initialView = "dashboard") {
+function workspaceURL(name, id = projectId, href = location.pathname) {
+  const url = new URL(href, location.href);
+  if (id) url.searchParams.set("project", id);
+  else url.searchParams.delete("project");
+  url.searchParams.set("view", name);
+  if (name !== "proposals") url.searchParams.delete("proposal");
+  if (name !== "costs") url.searchParams.delete("job");
+  if (name !== "delivery") {
+    for (const key of ["assembly", "t", "note"]) url.searchParams.delete(key);
+  }
+  return url;
+}
+
+function pushWorkspaceURL(url) {
+  if (url.href !== location.href) history.pushState(null, "", url);
+}
+
+function workspaceLink(name, label, href = workspaceURL(name), active = false) {
+  return node("a", {href, "aria-current": active ? "page" : null, onclick: event => {
+    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigate(name, href);
+  }}, label);
+}
+
+function dismissDisclosureOnExit(disclosure) {
+  disclosure.addEventListener("keydown", event => {
+    if (event.key === "Escape" && disclosure.open && !event.defaultPrevented) {
+      event.preventDefault();
+      disclosure.open = false;
+      disclosure.querySelector("summary").focus();
+    }
+  });
+  disclosure.addEventListener("focusout", event => {
+    if (event.relatedTarget && !disclosure.contains(event.relatedTarget)) disclosure.open = false;
+  });
+}
+
+async function changeProject(id, initialView = "dashboard", restore = false) {
   projectId = id;
-  sessionStorage.setItem("mpt-production-project", id);
+  if (id) sessionStorage.setItem("mpt-production-project", id);
+  else sessionStorage.removeItem("mpt-production-project");
   selected = new Set();
   timelineDraft = null;
   timelineRecovery = null;
@@ -183,6 +226,7 @@ async function changeProject(id, initialView = "dashboard") {
   youtubeVersion = null;
   selectedClip = 0;
   page = initialView;
+  if (!restore) pushWorkspaceURL(workspaceURL(initialView, id));
   await refresh();
   if (projectId === id && page === initialView) ui("workspace").focus();
 }
@@ -2411,9 +2455,8 @@ function timelineView() {
       "Your editor has a different cut. Check the note on its reviewed assembly before applying it.",
       "O corte do editor está diferente. Confira o comentário na montagem revisada antes de aplicar o ajuste.")),
     row(button(tr("Back to review note", "Voltar ao comentário"), () => {
-      history.replaceState(null, "", reviewContext.note.url);
       reviewReturnFocus = reviewContext.note.id;
-      navigate("delivery");
+      navigate("delivery", reviewContext.note.url);
     })));
   const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
     node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo, trimPanel, previewRecovery,
@@ -3208,12 +3251,7 @@ function jobAttentionLink(job) {
   const href = "/?project=" + project.id + "&view=costs&job=" + job.id;
   const label = canResumeRunway(job) ? tr("Open task recovery", "Abrir retomada da tarefa") :
     tr("Review pending charge", "Conferir cobrança pendente");
-  return node("a", {href, onclick: event => {
-    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    history.replaceState(null, "", href);
-    navigate("costs");
-  }}, label);
+  return workspaceLink("costs", label, href);
 }
 
 function jobAttention() {
@@ -3818,20 +3856,11 @@ function render() {
     ui("workspace").replaceChildren(loginView());
     return;
   }
-  const globalPages = ["projects", "catalog", "channel", "providers"];
   const pages = project ? Object.keys(navLabels) : globalPages;
   if (!pages.includes(page)) page = "projects";
   const sectionLabel = name => name === "timeline" ? tr("Edit and review", "Editar e revisar") : tr(...navLabels[name]);
   document.title = [sectionLabel(page), project?.data.title, "Hyphotenic"].filter(Boolean).join(" · ");
-  const url = new URL(location.href);
-  if (project) url.searchParams.set("project", project.id);
-  else url.searchParams.delete("project");
-  url.searchParams.set("view", page);
-  if (page !== "proposals") url.searchParams.delete("proposal");
-  if (page !== "costs") url.searchParams.delete("job");
-  if (page !== "delivery") {
-    for (const key of ["assembly", "t", "note"]) url.searchParams.delete(key);
-  }
+  const url = workspaceURL(page, project?.id || null, location.href);
   if (url.href !== location.href) history.replaceState(null, "", url);
   const utilities = node("details", {class: "utility-menu"},
     node("summary", {}, tr("Options", "Opções")),
@@ -3849,15 +3878,7 @@ function render() {
         render();
         ui("workspace").focus();
       })));
-  utilities.addEventListener("keydown", event => {
-    if (event.key === "Escape" && utilities.open) {
-      utilities.open = false;
-      utilities.querySelector("summary").focus();
-    }
-  });
-  utilities.addEventListener("focusout", event => {
-    if (event.relatedTarget && !utilities.contains(event.relatedTarget)) utilities.open = false;
-  });
+  dismissDisclosureOnExit(utilities);
   ui("utilities").append(utilities);
   if (project) {
     const switcher = select(projects.map(p => [p.id, p.data.title]), projectId);
@@ -3865,36 +3886,39 @@ function render() {
     switcher.addEventListener("change", () => execute(() => changeProject(switcher.value)));
     ui("utilities").prepend(switcher);
   }
-  const nav = name => node("button", {type: "button",
-    "aria-current": name === page ? "page" : null, onclick: () => navigate(name)}, sectionLabel(name));
-  const menu = project ? ["dashboard", ...projectNavigation.slice(0, 2), "timeline", "delivery",
-    ...projectNavigation.slice(2), ...globalPages.slice(0, 3)] : globalPages;
-  const option = name => node("option", {value: name}, sectionLabel(name));
-  const desktop = menu.map(item => {
+  const nav = (name, label = sectionLabel(name)) => workspaceLink(name, label, undefined, page === name);
+  const navItem = item => {
     if (typeof item === "string") return nav(item);
     const [en, pt, views] = item;
     return node("details", {class: "nav-group", open: views.includes(page)},
-      node("summary", {}, tr(en, pt)), node("div", {class: "nav-links"}, views.map(nav)));
-  });
-  const mobile = node("select", {"aria-label": tr("Workspace section", "Seção do estúdio")}, menu.map(item => {
-    if (typeof item === "string") return option(item);
-    const [en, pt, views] = item;
-    return node("optgroup", {label: tr(en, pt)}, views.map(option));
-  }));
-  mobile.value = page;
-  mobile.addEventListener("change", () => navigate(mobile.value));
+      node("summary", {}, tr(en, pt)), node("div", {class: "nav-links"}, views.map(name => nav(name))));
+  };
+  const studioLinks = project ? globalPages.slice(0, 3) : globalPages;
+  const desktop = project ? ["dashboard", "research", "scripts", sceneNavigation, "timeline", "delivery",
+    ...projectTools, ...studioLinks] : studioLinks;
+  const quickLinks = project ? {research: ["Research", "Pesquisa"], scripts: ["Script", "Roteiro"],
+    timeline: ["Edit", "Editar"], delivery: ["Delivery", "Entrega"]} :
+    {projects: navLabels.projects, catalog: ["Catalog", "Catálogo"], channel: ["Channel", "Canal"], providers: navLabels.providers};
+  const moreIsCurrent = project && !Object.hasOwn(quickLinks, page);
+  const more = project && node("details", {class: "nav-mobile-more"},
+    node("summary", {"data-current": moreIsCurrent,
+      "aria-label": moreIsCurrent ? tr("More sections. Current section: ", "Mais seções. Seção atual: ") + sectionLabel(page) : null},
+    tr("More", "Mais")),
+    node("div", {class: "nav-mobile-panel"}, ["dashboard", sceneNavigation, ...projectTools, ...studioLinks].map(navItem)));
+  if (more) dismissDisclosureOnExit(more);
   ui("navigation").setAttribute("aria-label", tr("Studio", "Estúdio"));
-  ui("navigation").replaceChildren(node("div", {class: "nav-desktop"}, desktop),
-    node("div", {class: "nav-mobile"}, mobile));
+  ui("navigation").replaceChildren(node("div", {class: "nav-desktop"}, desktop.map(navItem)),
+    node("div", {class: "nav-mobile"}, Object.entries(quickLinks).map(([name, labels]) => nav(name, tr(...labels))), more));
   const asyncViews = {projects: projectsView, providers: providersView, catalog: catalogView, proposals: proposalsView,
     delivery: deliveryView, analysis: experimentsView, channel: youtubeChannelView, youtube: youtubeView};
   if (page in asyncViews) {
     const loadingPage = page;
     const loadingProject = projectId;
-    ui("workspace").replaceChildren(node("p", {}, tr("Loading…", "Carregando…")));
+    const loading = node("p", {}, tr("Loading…", "Carregando…"));
+    ui("workspace").replaceChildren(loading);
     execute(async () => {
       const view = await asyncViews[loadingPage]();
-      if (view && page === loadingPage && projectId === loadingProject && loggedIn) {
+      if (view && loading.isConnected && page === loadingPage && projectId === loadingProject && loggedIn) {
         ui("workspace").replaceChildren(view);
         if (page === "delivery" && reviewReturnFocus) {
           ui("review-note-" + reviewReturnFocus)?.focus();
@@ -3916,14 +3940,29 @@ function render() {
   focusedJobLink = jobLink;
 }
 
-function navigate(name) {
+function showView(name) {
   if (name !== "timeline") reviewEdit = null;
   if (name !== "delivery") reviewReturnFocus = null;
   page = name;
+  if (projectId && project?.id !== projectId) return;
   render();
   const workspace = ui("workspace");
   if (!workspace.contains(document.activeElement)) workspace.focus();
 }
+
+function navigate(name, href) {
+  pushWorkspaceURL(workspaceURL(name, projectId, href));
+  showView(name);
+}
+
+window.addEventListener("popstate", () => {
+  if (!loggedIn) return;
+  const search = new URLSearchParams(location.search);
+  const id = search.get("project");
+  const name = search.get("view") || "dashboard";
+  if (id === projectId) showView(name);
+  else execute(() => changeProject(id, name, true));
+});
 
 async function start() {
   try {
@@ -3945,9 +3984,13 @@ function watchingPreview() {
   return player && !player.paused && !player.ended;
 }
 
+function usingNavigation() {
+  return ui("utilities").contains(document.activeElement) || ui("navigation").contains(document.activeElement);
+}
+
 setInterval(async () => {
   if (polling || editing || !loggedIn || !project || ui("dialog").open || page === "providers" || watchingPreview() ||
-      ui("utilities").contains(document.activeElement) ||
+      usingNavigation() ||
       (ui("workspace").contains(document.activeElement) && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName))) return;
   if (!project.jobs.some(job => ["DRAFT", "GENERATING"].includes(job.status))) return;
   polling = true;
@@ -3955,7 +3998,7 @@ setInterval(async () => {
   const activePage = page;
   try {
     const updated = await api(path());
-    if (!editing && !ui("dialog").open && !watchingPreview() && !ui("utilities").contains(document.activeElement) &&
+    if (!editing && !ui("dialog").open && !watchingPreview() && !usingNavigation() &&
         projectId === activeProject && page === activePage &&
         json(updated.jobs) !== json(project.jobs)) {
       project = updated;
