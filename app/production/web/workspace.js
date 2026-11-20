@@ -11,6 +11,7 @@ let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null, t
 let timelineRecovery, timelineInitial, timelineStored;
 let editing = false, polling = false;
 let activeScenePreview, editorPreview, reviewEdit, reviewReturnFocus;
+let openCostExportId;
 let focusedJobLink;
 let experimentVersion = null;
 let youtubeVersion = null;
@@ -2698,11 +2699,21 @@ async function deliveryView() {
   } : null;
   const feedback = player && annotation && reviewNotes(assembly, player, annotation.notes, marked?.id, editNote);
   const previous = historic || (assembly && (!assembly.fresh || (assembly.data.timeline_revision && !matching)));
-  const preview = player && card(node("div", {class: "preview-stage"}, player), row(assetBadge(assembly),
-    small(tr("Assembly v", "Montagem v") + assembly.seq),
+  const preview = player && card(row(node("strong", {}, tr("Assembly v", "Montagem v") + assembly.seq),
+    assetBadge(assembly),
     matching && small(tr("Saved cut v", "Corte salvo v") + plan.seq),
     previous && small(tr("Earlier assembly", "Montagem anterior"))),
+    node("div", {class: "preview-stage"}, player),
     node("div", {class: "row review-actions"}, assemblyScenePicker(assembly, player), feedback?.add));
+  const reviewLayout = (...actions) => node("div", {class: preview ? "delivery-layout" : "stack"},
+    preview, stack(...actions, feedback?.panel));
+  const costs = cost && node("details", {class: "card delivery-details", open: exported.id === openCostExportId,
+    ontoggle: e => {
+      const details = e.currentTarget;
+      if (details.isConnected) openCostExportId = details.open ? exported.id : null;
+    }},
+    node("summary", {}, tr("Export costs", "Custos da exportação"), cost.totals?.uncertain > 0 &&
+      node("span", {class: "status stale"}, tr("Charges to verify", "Cobranças a verificar"))), deliveryCosts(cost));
   const files = (item, title = tr("Download existing MP4", "Baixar MP4 existente")) => item?.url && row(
     node("a", {href: item.url + "?attachment=true"}, title),
     ...Object.entries(item.data.captions || {}).map(([language, id]) => node("a",
@@ -2724,9 +2735,9 @@ async function deliveryView() {
       "This assembly is unavailable in the project.", "A montagem do link está indisponível neste projeto.")));
   if (historic) return stack(title(tr("Review assembly v", "Revisão da montagem v") + assembly.seq,
     node("a", {href: "/?project=" + target + "&view=delivery"}, tr("Current delivery", "Entrega atual"))),
-    preview, files(exported), deliveryCosts(cost), feedback?.panel);
-  if (plan.blocked) return stack(heading, preview, previousDelivery,
-    card(node("p", {role: "status"}, plan.blocked), !legacyExport && files(exported)), deliveryCosts(cost), feedback?.panel);
+    reviewLayout(files(exported)), costs);
+  if (plan.blocked) return stack(heading,
+    reviewLayout(card(node("p", {role: "status"}, plan.blocked), !legacyExport && files(exported))), previousDelivery, costs);
 
   const materialNames = {scene: ["Storyboard", "Storyboard"], image: ["Reference frame", "Quadro de referência"],
     video: ["Take", "Tomada"], voice: ["Narration", "Narração"], translation: ["Translation", "Tradução"],
@@ -2761,7 +2772,9 @@ async function deliveryView() {
         }, true),
       ]);
   };
-  const checklist = card(node("h2", {}, tr("Scene materials", "Materiais das cenas")),
+  const checklist = node("details", {class: "card delivery-details", open: incomplete.length > 0},
+    node("summary", {}, tr("Scene materials", "Materiais das cenas"), incomplete.length > 0 &&
+      node("span", {class: "status stale"}, incomplete.length + " " + tr("to review", "a revisar"))),
     ...plan.scenes.map(scene => node("details", {}, node("summary", {},
       scene.title + " · " + (pending(scene) ? tr("Awaiting review", "A revisar") : tr("Reviewed", "Revisada"))),
       stack(row(small(formatDuration(scene.start) + " – " + formatDuration(scene.end)),
@@ -2805,8 +2818,8 @@ async function deliveryView() {
   const delivery = card(node("h2", {}, tr("Assembly and export", "Montagem e exportação")),
     small([tr("Cut v", "Corte v") + plan.seq, plan.aspect, plan.resolution + "p", plan.languages.join(", ")].join(" · ")),
     action, requestRevision, !delivered && !legacyExport && files(exported));
-  return stack(heading, preview, previousDelivery, delivery, deliveryCosts(cost), feedback?.panel,
-    checklist, assembly && revisions("assembly"), jobHistory());
+  return stack(heading, reviewLayout(delivery), previousDelivery, checklist, costs,
+    assembly && revisions("assembly"), jobHistory());
 }
 
 async function youtubeChannelView() {
@@ -3791,17 +3804,13 @@ function render() {
   document.documentElement.lang = locale === "pt" ? "pt-BR" : "en";
   ui("skip-main").textContent = tr("Skip to main content", "Pular para o conteúdo principal");
   ui("product").textContent = tr("Production", "Produção");
-  ui("utilities").replaceChildren(button(locale === "en" ? "Português" : "English", () => {
+  const languageButton = button(locale === "en" ? "Português" : "English", () => {
     locale = locale === "en" ? "pt" : "en";
     localStorage.setItem("mpt-production-language", locale);
     render();
-  }), ...(loggedIn ? [button(tr("Sign out", "Sair"), async () => {
-    await api("/api/session", "DELETE");
-    loggedIn = false;
-    project = null;
-    projects = [];
-    render();
-  })] : []));
+    ui("utilities").querySelector("summary, button")?.focus();
+  });
+  ui("utilities").replaceChildren(languageButton);
   ui("sidebar").hidden = !loggedIn;
   if (!loggedIn) {
     timelineDraft = timelineRecovery = null;
@@ -3824,12 +3833,37 @@ function render() {
     for (const key of ["assembly", "t", "note"]) url.searchParams.delete(key);
   }
   if (url.href !== location.href) history.replaceState(null, "", url);
+  const utilities = node("details", {class: "utility-menu"},
+    node("summary", {}, tr("Options", "Opções")),
+    node("div", {class: "utility-actions"}, languageButton,
+      project && button(tr("Refresh project", "Atualizar projeto"), async () => {
+        await refresh();
+        ui("utilities").querySelector("summary")?.focus();
+      }),
+      button(tr("Sign out", "Sair"), async () => {
+        await api("/api/session", "DELETE");
+        loggedIn = false;
+        project = null;
+        projects = [];
+        openCostExportId = null;
+        render();
+        ui("workspace").focus();
+      })));
+  utilities.addEventListener("keydown", event => {
+    if (event.key === "Escape" && utilities.open) {
+      utilities.open = false;
+      utilities.querySelector("summary").focus();
+    }
+  });
+  utilities.addEventListener("focusout", event => {
+    if (event.relatedTarget && !utilities.contains(event.relatedTarget)) utilities.open = false;
+  });
+  ui("utilities").append(utilities);
   if (project) {
     const switcher = select(projects.map(p => [p.id, p.data.title]), projectId);
     switcher.setAttribute("aria-label", tr("Active project", "Projeto ativo"));
     switcher.addEventListener("change", () => execute(() => changeProject(switcher.value)));
     ui("utilities").prepend(switcher);
-    ui("utilities").append(button(tr("Refresh project", "Atualizar projeto"), refresh));
   }
   const nav = name => node("button", {type: "button",
     "aria-current": name === page ? "page" : null, onclick: () => navigate(name)}, sectionLabel(name));
@@ -3913,6 +3947,7 @@ function watchingPreview() {
 
 setInterval(async () => {
   if (polling || editing || !loggedIn || !project || ui("dialog").open || page === "providers" || watchingPreview() ||
+      ui("utilities").contains(document.activeElement) ||
       (ui("workspace").contains(document.activeElement) && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName))) return;
   if (!project.jobs.some(job => ["DRAFT", "GENERATING"].includes(job.status))) return;
   polling = true;
@@ -3920,7 +3955,8 @@ setInterval(async () => {
   const activePage = page;
   try {
     const updated = await api(path());
-    if (!editing && !ui("dialog").open && !watchingPreview() && projectId === activeProject && page === activePage &&
+    if (!editing && !ui("dialog").open && !watchingPreview() && !ui("utilities").contains(document.activeElement) &&
+        projectId === activeProject && page === activePage &&
         json(updated.jobs) !== json(project.jobs)) {
       project = updated;
       render();
