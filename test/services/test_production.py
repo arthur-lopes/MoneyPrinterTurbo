@@ -1641,6 +1641,50 @@ def test_multilingual_render_and_approval_gate(sandbox, monkeypatch):
         preview_url, headers=auth, json=dict(request, subtitles=False)
     )
     assert no_text.json()["cues"] == []
+    cut_url = timeline_url + "/cut-preview"
+    cut_request = {
+        "timeline": dict(
+            timeline,
+            clips=[dict(request["clip"], transition="fade", effect=soundtrack["id"])],
+            watermark=True,
+        ),
+        "language": "pt-BR",
+    }
+    cut = client.post(cut_url, headers=auth, json=cut_request).raise_for_status().json()
+    music_url = path + "/media/" + soundtrack["id"]
+    assert cut == {
+        "clips": [
+            dict(
+                {k: v for k, v in preview.items() if k != "aspect"},
+                scene=sid,
+                title=story["data"]["title"],
+                start=0,
+                effect=music_url,
+                fade=0.4,
+            )
+        ],
+        "seconds": 1.75,
+        "aspect": "16:9",
+        "music": music_url,
+        "music_volume": 0.15,
+        "watermark": True,
+    }
+    assert client.post(cut_url, headers=other, json=cut_request).status_code == 404
+    assert client.post(cut_url, json=cut_request).status_code == 401
+    wrong_scene = dict(cut_request["timeline"], clips=[{"scene": uuid4().hex}])
+    assert (
+        client.post(
+            cut_url, headers=auth, json=dict(cut_request, timeline=wrong_scene)
+        ).status_code
+        == 409
+    )
+    wrong_language = dict(cut_request["timeline"], languages=["en-US"])
+    assert (
+        client.post(
+            cut_url, headers=auth, json=dict(cut_request, timeline=wrong_language)
+        ).status_code
+        == 422
+    )
     assert store.snapshot(actor, pid)["jobs"] == jobs_before
     assert client.get(timeline_url, headers=auth).status_code == 404
     creation = {**auth, "If-None-Match": "*"}

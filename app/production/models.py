@@ -333,6 +333,11 @@ class ScenePreview(Input):
     watermark: bool = False
 
 
+class CutPreview(Input):
+    timeline: Timeline
+    language: Language
+
+
 class DeliveryMetadata(Input):
     title: Short
     description: Text

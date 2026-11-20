@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from . import codex_cli, credentials, experiments, rough_cut, scene_motion
 from .models import GRAPHIC_MODES, HYPERFRAMES_MODES, Scene, Timeline, check_cue_window
-from .media import caption_cues
+from .media import caption_cues, fade_duration
 from .store import ACTIVE, SCENE_OPERATIONS, RuleError, Store, encode, unpack
 
 
@@ -296,27 +296,87 @@ class Workbench(Store):
                 db, pid, timeline, request.clip, []
             )
             voice = voices[request.language]
+        return dict(
+            self._preview_take(
+                entry, video, voice, request.language, request.subtitles
+            ),
+            aspect=request.aspect,
+        )
+
+    @staticmethod
+    def _preview_take(entry, video, voice, language, subtitles):
         return {
             "take": video["url"],
             "voice": voice["url"],
             "trim": entry["trim"],
             "seconds": entry["seconds"],
             "narration_offset": entry["narration_offset"],
-            "aspect": request.aspect,
             "cues": [
                 {"start": round(start, 3), "end": round(end, 3), "text": text}
-                for start, end, text in caption_cues(entry, request.language)
+                for start, end, text in caption_cues(entry, language)
             ]
-            if request.subtitles
+            if subtitles
             else [],
         }
 
-    def _timeline(self, db, pid, project, timeline, deps, *, for_review=False):
+    def preview_cut(self, actor, pid, request):
+        timeline = request.timeline
+        language = request.language
+        with self.transaction(write=False) as db:
+            project = self.project(db, actor, pid)["data"]
+            self._timeline_order(db, pid, project, timeline)
+            if language not in timeline.languages:
+                raise RuleError("Select a language included in the cut", 422)
+            # Verify the materials used by the selected language, independently of
+            # the other languages that still need work before assembly or export.
+            single = timeline.model_copy(update={"languages": [language]})
+            clips = []
+            position = 0.0
+            for clip in timeline.clips:
+                entry, scene, video, voices = self._timeline_clip(
+                    db, pid, single, clip, []
+                )
+                clips.append(
+                    dict(
+                        self._preview_take(
+                            entry, video, voices[language], language, timeline.subtitles
+                        ),
+                        scene=clip.scene,
+                        title=scene["data"]["title"],
+                        start=position,
+                        effect=f"/api/projects/{pid}/media/{clip.effect}"
+                        if clip.effect
+                        else None,
+                        fade=fade_duration(entry["seconds"])
+                        if clip.transition == "fade"
+                        else 0,
+                    )
+                )
+                position += entry["seconds"]
+            music = (
+                self._attachment(db, pid, timeline.music, "audio")
+                if timeline.music
+                else None
+            )
+        return {
+            "clips": clips,
+            "seconds": position,
+            "aspect": timeline.aspect,
+            "music": music["url"] if music else None,
+            "music_volume": timeline.music_volume,
+            "watermark": timeline.watermark,
+        }
+
+    def _timeline_order(self, db, pid, project, timeline):
         if not timeline or not set(timeline.languages) <= set(project["languages"]):
             raise RuleError("Choose a timeline and project languages")
         order = self.order(db, pid)
         if set(order) != {entry.scene for entry in timeline.clips}:
             raise RuleError("Include every active storyboard scene")
+        return order
+
+    def _timeline(self, db, pid, project, timeline, deps, *, for_review=False):
+        order = self._timeline_order(db, pid, project, timeline)
         deps.append({"order": order})
         clips = []
         retention = []

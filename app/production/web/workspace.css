@@ -97,7 +97,9 @@ dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .preview-stage { display: grid; place-items: center; border-radius: .55rem; background: #101517; min-height: 8rem; }
 .preview-stage video { max-height: min(48vh, 36rem); }
 .scene-preview { width: 100%; align-items: center; padding: .55rem; }
-.scene-preview-frame { overflow: hidden; margin-inline: auto; width: min(100%, 80vh); aspect-ratio: 16 / 9; }
+.scene-preview-frame { position: relative; overflow: hidden; margin-inline: auto; width: min(100%, 80vh); aspect-ratio: 16 / 9; }
+.scene-preview-watermark { position: absolute; inset: .6rem auto auto .6rem; padding: .2rem .36rem;
+  color: white; background: rgb(0 0 0 / 70%); font-size: .72rem; }
 .scene-preview-frame.portrait { width: min(100%, 25vh); aspect-ratio: 9 / 16; }
 .preview-stage .scene-preview-frame video { height: 100%; max-height: none; object-fit: cover; }
 .scene-preview-controls { display: grid; grid-template-columns: auto minmax(2rem, 1fr) auto;

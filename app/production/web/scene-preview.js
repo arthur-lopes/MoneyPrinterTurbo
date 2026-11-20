@@ -1,127 +1,185 @@
 "use strict";
 
-function createScenePreview() {
-  const video = node("video", {preload: "auto", playsinline: true,
-    "aria-label": tr("Scene in progress", "Cena em edição")});
-  video.muted = true;
-  const frame = node("div", {class: "scene-preview-frame", hidden: true}, video);
-  const track = typeof VTTCue !== "undefined" && video.addTextTrack("subtitles");
+function createScenePreview(onScene) {
+  const slots = Array.from({length: 2}, () => {
+    const video = node("video", {preload: "auto", playsinline: true});
+    video.muted = true;
+    return {video, track: typeof VTTCue !== "undefined" && video.addTextTrack("subtitles"), index: -1};
+  });
+  const mark = node("span", {class: "scene-preview-watermark", hidden: true, "aria-hidden": "true"}, "DRAFT");
+  const frame = node("div", {class: "scene-preview-frame", hidden: true}, slots[0].video, mark);
   const status = node("small", {class: "scene-preview-status", role: "status"});
-  const time = input(0, {type: "range", min: 0, max: 0, step: ".01",
-    "aria-label": tr("Scene playhead", "Posição na cena")});
+  const time = input(0, {type: "range", min: 0, max: 0, step: ".01"});
   const readout = small("");
-  const playText = () => video.paused ? tr("Play scene", "Reproduzir cena") : tr("Pause scene", "Pausar cena");
-  const play = node("button", {type: "button", onclick: togglePlayback}, playText());
+  const play = node("button", {type: "button", onclick: togglePlayback});
   const controls = node("div", {class: "scene-preview-controls", hidden: true}, play, time, readout);
   const element = node("div", {class: "scene-preview stack"}, frame, controls, status);
-  let plan, audio, voice, source, audioRequest, audioData, generation = 0, tick;
-  let pending = false, starting = false;
+  const sounds = new Map();
+  const lifecycle = new AbortController();
+  let plan, signature, active = slots[0], audio, sources = [], generation = 0, tick;
+  let requested = false, starting = false, pending = false;
 
-  function loadVoice(url) {
-    audioRequest?.abort();
-    audioRequest = new AbortController();
-    audioData = fetch(url, {signal: audioRequest.signal}).then(response =>
-      response.ok ? response.arrayBuffer() : null).catch(() => null);
-  }
-
-  function position() {
-    return plan ? Math.min(plan.seconds, Math.max(0, video.currentTime - plan.trim)) : 0;
-  }
+  const scene = () => plan?.clips[active.index];
+  const localTime = () => Math.min(scene().seconds, Math.max(0, active.video.currentTime - scene().trim));
 
   function syncControls() {
-    play.textContent = playText();
-    play.disabled = !plan || pending;
+    play.textContent = plan?.continuous ?
+      (requested ? tr("Pause cut", "Pausar corte") : tr("Play cut", "Reproduzir corte")) :
+      (requested ? tr("Pause scene", "Pausar cena") : tr("Play scene", "Reproduzir cena"));
+    play.disabled = !scene() || (pending && !requested);
     play.setAttribute("aria-busy", String(starting));
-    time.disabled = !plan || pending || starting;
+    time.disabled = !scene() || pending || starting;
   }
 
   function showPosition() {
-    if (!plan) return;
-    const value = position();
+    const clip = scene();
+    if (!clip) return;
+    const at = localTime();
+    const value = clip.start + at;
     time.value = value;
     const text = value.toFixed(1) + " / " + plan.seconds.toFixed(1) + " s";
     if (readout.textContent !== text) {
       time.setAttribute("aria-valuetext", text);
       readout.textContent = text;
     }
+    const light = clip.fade ? Math.min(1, at / clip.fade, (clip.seconds - at) / clip.fade) : 1;
+    active.video.style.filter = light === 1 ? "" : `brightness(${Math.max(0, light)})`;
   }
 
-  function stopVoice() {
-    if (!source) return;
-    source.stop();
-    source.disconnect();
-    source = null;
-  }
-
-  function syncVoice() {
-    stopVoice();
-    if (!plan || !voice || video.paused || video.seeking || video.readyState < 3) return;
-    const at = position();
-    const delay = Math.max(0, plan.narration_offset - at);
-    const offset = Math.max(0, at - plan.narration_offset);
-    const length = Math.min(voice.duration - offset, plan.seconds - at - delay);
-    if (length <= 0) return;
-    const part = audio.createBufferSource();
-    part.buffer = voice;
-    part.connect(audio.destination);
-    part.start(audio.currentTime + delay, offset, length);
-    source = part;
-  }
-
-  function advance() {
-    if (!plan || video.paused) return;
-    if (position() >= plan.seconds) {
-      video.pause();
-      video.currentTime = Math.min(video.duration, plan.trim + plan.seconds);
-    } else {
-      tick = requestAnimationFrame(advance);
+  function stopSound() {
+    for (const [part, gain] of sources) {
+      part.stop();
+      part.disconnect();
+      gain.disconnect();
     }
-    showPosition();
+    sources = [];
+  }
+
+  function schedule(buffer, delay, offset, length, volume, loop = false) {
+    if (!buffer || length <= 0 || volume === 0) return;
+    const part = audio.createBufferSource();
+    const gain = audio.createGain();
+    part.buffer = buffer;
+    part.loop = loop;
+    gain.gain.value = volume;
+    part.connect(gain).connect(audio.destination);
+    part.start(audio.currentTime + delay, offset, length);
+    sources.push([part, gain]);
+  }
+
+  function syncSound() {
+    stopSound();
+    const clip = scene(), video = active.video;
+    if (!clip || !requested || video.paused || video.seeking || video.readyState < 3) return;
+    const at = localTime(), left = clip.seconds - at;
+    const voice = sounds.get(clip.voice)?.buffer;
+    const effect = sounds.get(clip.effect)?.buffer;
+    const music = sounds.get(plan.music)?.buffer;
+    const delay = Math.max(0, clip.narration_offset - at);
+    const offset = Math.max(0, at - clip.narration_offset);
+    if (voice) schedule(voice, delay, offset, Math.min(voice.duration - offset, left - delay), effect ? .5 : 1);
+    if (effect) schedule(effect, 0, at, Math.min(effect.duration - at, left), .5);
+    if (music) schedule(music, 0, (clip.start + at) % music.duration, left, plan.music_volume, true);
+  }
+
+  function soundEntry(url) {
+    if (sounds.has(url)) return sounds.get(url);
+    const controller = new AbortController();
+    const bytes = fetch(url, {signal: controller.signal}).then(res => res.ok ? res.arrayBuffer() : null).catch(() => null);
+    const entry = {controller, bytes};
+    sounds.set(url, entry);
+    return entry;
+  }
+
+  function soundBuffer(url) {
+    const entry = soundEntry(url);
+    entry.decode ??= entry.bytes.then(bytes => {
+      if (!bytes) throw new Error("Audio unavailable");
+      return audio.decodeAudioData(bytes);
+    }).then(buffer => { entry.buffer = buffer; }).catch(error => {
+      if (sounds.get(url) === entry) sounds.delete(url);
+      throw error;
+    });
+    return entry.decode;
+  }
+
+  function soundUrls(index) {
+    const clip = plan.clips[index];
+    return clip ? [clip.voice, clip.effect, plan.music_volume > 0 && plan.music].filter(Boolean) : [];
+  }
+
+  function warmSounds() {
+    const next = soundUrls(active.index + 1);
+    const retained = new Set([...soundUrls(active.index), ...next]);
+    for (const [url, entry] of sounds) {
+      if (retained.has(url)) continue;
+      entry.controller.abort();
+      sounds.delete(url);
+    }
+    retained.forEach(soundEntry);
+    if (audio) next.forEach(url => soundBuffer(url).catch(() => {}));
+  }
+
+  function prepare(slot, index, seek) {
+    const clip = plan.clips[index], video = slot.video;
+    slot.index = clip ? index : -1;
+    if (!clip) {
+      if (video.hasAttribute("src")) {
+        video.removeAttribute("src");
+        video.load();
+      }
+      return;
+    }
+    if (video.getAttribute("src") !== clip.take) video.src = clip.take;
+    else if (video.error && seek != null) video.load();
+    if (seek != null) video.currentTime = clip.trim + seek;
+    const cueKey = JSON.stringify([clip.trim, clip.seconds, clip.cues]);
+    if (!slot.track || slot.cueKey === cueKey) return;
+    slot.cueKey = cueKey;
+    for (const cue of Array.from(slot.track.cues || [])) slot.track.removeCue(cue);
+    slot.track.mode = "showing";
+    for (const cue of clip.cues) {
+      const end = Math.min(cue.end, clip.seconds);
+      if (end > cue.start) slot.track.addCue(new VTTCue(clip.trim + cue.start, clip.trim + end,
+        cue.text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")));
+    }
   }
 
   function halt() {
     generation++;
-    starting = false;
-    video.pause();
-    stopVoice();
+    requested = starting = false;
+    active.video.pause();
+    stopSound();
     cancelAnimationFrame(tick);
+    status.textContent = "";
     syncControls();
   }
 
-  async function togglePlayback() {
-    if (!plan || pending || starting) return;
-    if (!video.paused) {
-      halt();
-      return;
-    }
+  async function begin() {
     const playback = ++generation;
-    starting = true;
-    status.textContent = tr("Loading narration…", "Carregando narração…");
+    const video = active.video;
+    requested = starting = true;
+    const notice = setTimeout(() => {
+      if (playback === generation) status.textContent = plan.continuous ?
+        tr("Loading media…", "Carregando mídia…") : tr("Loading narration…", "Carregando narração…");
+    }, 180);
     syncControls();
     try {
       audio ??= new AudioContext();
       await audio.resume();
       if (playback !== generation) return;
-      if (!voice) {
-        if (!audioData) loadVoice(plan.voice);
-        const trackData = await audioData;
-        if (playback !== generation) return;
-        if (!trackData) throw new Error();
-        const decoded = await audio.decodeAudioData(trackData.slice(0));
-        if (playback !== generation) return;
-        voice = decoded;
-      }
+      warmSounds();
+      await Promise.all(soundUrls(active.index).map(soundBuffer));
       if (playback !== generation) return;
-      if (video.ended || position() >= plan.seconds - 0.01) video.currentTime = plan.trim;
       await video.play();
       if (playback === generation) status.textContent = "";
     } catch {
       if (playback === generation) {
-        audioData = null;
-        status.textContent = tr("Could not play this scene. Try again.",
-          "Não foi possível reproduzir a cena. Tente novamente.");
+        halt();
+        status.textContent = tr("Could not play this material. Try again.", "Não foi possível reproduzir esta mídia. Tente novamente.");
       }
     } finally {
+      clearTimeout(notice);
       if (playback === generation) {
         starting = false;
         syncControls();
@@ -129,64 +187,152 @@ function createScenePreview() {
     }
   }
 
-  for (const event of ["pause", "waiting", "seeking", "ended"]) video.addEventListener(event, stopVoice);
-  for (const event of ["playing", "seeked"]) video.addEventListener(event, syncVoice);
-  video.addEventListener("play", () => { syncControls(); cancelAnimationFrame(tick); advance(); });
-  video.addEventListener("pause", syncControls);
-  video.addEventListener("ended", syncControls);
-  video.addEventListener("timeupdate", showPosition);
-  video.addEventListener("error", () => {
+  function activate(index, offset, resume = false) {
     halt();
-    status.textContent = tr("Could not load the take.", "Não foi possível carregar a tomada.");
-  });
-  time.addEventListener("input", () => { video.currentTime = plan.trim + Number(time.value); });
+    const ready = slots.find(slot => slot.index === index);
+    active = ready || active;
+    const preload = ready && ready.video.readyState >= 2 && !ready.video.seeking &&
+      Math.abs(ready.video.currentTime - plan.clips[index].trim - offset) < .005;
+    prepare(active, index, preload ? null : offset);
+    for (const slot of slots) slot.video.hidden = slot !== active;
+    const standby = slots.find(slot => slot !== active);
+    if (plan.continuous) prepare(standby, index + 1, 0);
+    warmSounds();
+    showPosition();
+    if (plan.continuous) onScene?.(scene().scene);
+    if (resume) begin();
+  }
 
-  function apply(next) {
-    const move = !plan || ["take", "trim", "seconds"].some(field => plan[field] !== next[field]);
-    const sound = plan?.voice !== next.voice;
-    if (move || sound || plan.narration_offset !== next.narration_offset) halt();
-    if (sound) {
-      loadVoice(next.voice);
-      voice = null;
+  function finishScene() {
+    const next = active.index + 1;
+    if (requested && plan.clips[next]) {
+      activate(next, 0, true);
+    } else {
+      halt();
+      active.video.currentTime = Math.min(active.video.duration, scene().trim + scene().seconds);
+      showPosition();
     }
-    if (plan?.take !== next.take) video.src = next.take;
-    plan = next;
-    if (move) video.currentTime = next.trim;
-    if (track) {
-      for (const cue of Array.from(track.cues || [])) track.removeCue(cue);
-      track.mode = "showing";
-      for (const cue of next.cues) {
-        const end = Math.min(cue.end, next.seconds);
-        if (end > cue.start) track.addCue(new VTTCue(next.trim + cue.start, next.trim + end,
-          cue.text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")));
-      }
+  }
+
+  function advance() {
+    if (!scene() || active.video.paused) return;
+    if (localTime() >= scene().seconds) return finishScene();
+    showPosition();
+    tick = requestAnimationFrame(advance);
+  }
+
+  function togglePlayback() {
+    if (!scene() || (pending && !requested)) return;
+    if (requested) return halt();
+    if (active.video.error) return activate(active.index, localTime(), true);
+    if (active.video.ended || localTime() >= scene().seconds - .01) {
+      const restart = active.index === plan.clips.length - 1 ? 0 : active.index;
+      return activate(restart, 0, true);
     }
+    begin();
+  }
+
+  for (const slot of slots) {
+    const {video} = slot;
+    for (const event of ["pause", "waiting", "seeking"]) {
+      video.addEventListener(event, () => { if (active === slot) stopSound(); });
+    }
+    for (const event of ["playing", "seeked"]) {
+      video.addEventListener(event, () => { if (active === slot) syncSound(); });
+    }
+    video.addEventListener("play", () => {
+      if (active !== slot) return;
+      cancelAnimationFrame(tick);
+      advance();
+    });
+    video.addEventListener("ended", () => { if (active === slot && scene()) finishScene(); });
+    video.addEventListener("timeupdate", () => { if (active === slot) showPosition(); });
+    video.addEventListener("error", () => {
+      if (active !== slot || !scene()) return;
+      halt();
+      status.textContent = tr("Could not load the take.", "Não foi possível carregar a tomada.");
+    });
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && requested) halt();
+  }, {signal: lifecycle.signal});
+
+  time.addEventListener("input", event => {
+    event.stopPropagation();
+    if (!scene()) return;
+    const value = Number(time.value);
+    if (value >= plan.seconds) {
+      const last = plan.clips.length - 1;
+      activate(last, plan.clips[last].seconds);
+      return;
+    }
+    const index = plan.clips.findLastIndex(clip => clip.start <= value);
+    const local = value - plan.clips[index].start;
+    if (index === active.index) active.video.currentTime = scene().trim + local;
+    else activate(index, local, requested);
+  });
+
+  function unload() {
+    halt();
+    for (const entry of sounds.values()) entry.controller.abort();
+    sounds.clear();
+    for (const slot of slots) {
+      slot.index = -1;
+      slot.video.removeAttribute("src");
+      slot.video.load();
+    }
+    plan = signature = null;
+    active = slots[0];
+    frame.hidden = controls.hidden = true;
+  }
+
+  function apply(next, selected) {
+    const continuous = Boolean(next.clips);
+    const clips = next.clips || [{...next, start: 0}];
+    const key = JSON.stringify([continuous, next.aspect, next.music, next.music_volume,
+      clips.map(({cues, title, ...timing}) => timing)]);
+    const changed = key !== signature;
+    if (changed) unload();
+    plan = {...next, clips, continuous};
+    signature = key;
+    if (continuous && !frame.contains(slots[1].video)) frame.insertBefore(slots[1].video, mark);
+    if (!continuous) slots[1].video.remove();
+    for (const slot of slots) slot.video.setAttribute("aria-label", continuous ?
+      tr("Cut in progress", "Corte em edição") : tr("Scene in progress", "Cena em edição"));
+    time.setAttribute("aria-label", continuous ? tr("Cut playhead", "Posição no corte") : tr("Scene playhead", "Posição na cena"));
     frame.classList.toggle("portrait", next.aspect === "9:16");
+    mark.hidden = !next.watermark;
     frame.hidden = controls.hidden = false;
     time.max = next.seconds;
     pending = false;
     status.textContent = "";
+    if (changed) activate(Math.max(0, clips.findIndex(clip => clip.scene === selected)), 0);
+    else slots.forEach(slot => { if (slot.index >= 0) prepare(slot, slot.index); });
     syncControls();
     showPosition();
   }
 
-  return {element, apply, halt,
-    playing: () => !video.paused,
+  return {element, apply, clear: unload,
+    playing: () => requested,
+    jump(id) {
+      if (!plan?.continuous) return;
+      const index = plan.clips.findIndex(clip => clip.scene === id);
+      if (index >= 0) activate(index, 0, requested);
+    },
     updating() {
       pending = true;
-      status.textContent = tr("Updating scene preview…", "Atualizando prévia da cena…");
+      status.textContent = tr("Updating preview…", "Atualizando prévia…");
       syncControls();
     },
     error(message) {
-      halt();
+      unload();
       frame.hidden = controls.hidden = true;
       status.textContent = message;
     },
     dispose() {
-      halt();
-      audioRequest?.abort();
-      video.removeAttribute("src");
-      video.load();
+      lifecycle.abort();
+      unload();
       audio?.close().catch(() => {});
     },
   };

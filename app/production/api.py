@@ -680,6 +680,10 @@ def create_app(
     def preview_scene(pid: m.Id, body: m.ScenePreview, actor=Depends(authenticated)):
         return store.preview_scene(actor, pid, body)
 
+    @app.post("/api/projects/{pid}/timeline/cut-preview")
+    def preview_cut(pid: m.Id, body: m.CutPreview, actor=Depends(authenticated)):
+        return store.preview_cut(actor, pid, body)
+
     @app.get("/api/projects/{pid}/timeline")
     def timeline(
         pid: m.Id,

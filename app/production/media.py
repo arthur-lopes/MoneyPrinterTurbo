@@ -411,6 +411,10 @@ def captions(path, timeline, language):
         raise MediaError("The selected timeline has no subtitle cues")
 
 
+def fade_duration(seconds):
+    return min(0.4, seconds / 3)
+
+
 def webvtt(path):
     """Present the same generated subtitle cues as a native browser track."""
     lines = path.read_text(encoding="utf-8-sig").split("\n\n")
@@ -475,7 +479,7 @@ def render(root, timeline, output, stop, timeout, progress, *, cache_scope=None)
             f"setsar=1,fps=24,tpad=stop_mode=clone:stop_duration={seconds}"
         )
         if clip["transition"] == "fade":
-            fade = min(0.4, seconds / 3)
+            fade = fade_duration(seconds)
             vf += f",fade=t=in:d={fade},fade=t=out:st={seconds - fade}:d={fade}"
         if timeline["watermark"]:
             args.extend(["-f", "image2", "-i", "draft.png"])

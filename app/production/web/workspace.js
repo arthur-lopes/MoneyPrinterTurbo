@@ -1145,16 +1145,22 @@ function timelineView() {
   const remembered = editorPreview?.project === projectId ? editorPreview : {};
   const mode = select([
     ...(rendered ? [["assembly", tr("Latest assembly", "Última montagem")]] : []),
+    ["cut", tr("Cut preview", "Prévia do corte")],
     ["scene", tr("Live scene", "Prévia da cena")],
     ["clip", tr("Original take", "Tomada original")],
-  ], remembered.mode === "scene" || remembered.mode === "clip" ? remembered.mode : rendered ? "assembly" : "clip");
+  ], ["cut", "scene", "clip"].includes(remembered.mode) ? remembered.mode : rendered ? "assembly" : "clip");
   mode.setAttribute("aria-label", tr("Preview source", "Fonte da prévia"));
   const interfaceLanguage = locale === "pt" ? "pt-BR" : "en-US";
   const previewLanguage = select([]);
   const languageField = label(tr("Preview language", "Idioma da prévia"), previewLanguage);
   languageField.classList.add("scene-preview-language");
-  const scenePlayer = createScenePreview();
+  const scenePlayer = createScenePreview(scene => {
+    if (mode.value !== "cut" || inspector.contains(document.activeElement)) return;
+    const index = draft.clips.findIndex(clip => clip.scene === scene);
+    if (index >= 0 && index !== selectedClip) selectClip(index, false);
+  });
   activeScenePreview = scenePlayer;
+  const interactive = () => mode.value === "scene" || mode.value === "cut";
   let sceneRequest = 0, sceneTimer, sceneKey, previewLanguages = [];
   let previewMedia, clipPreview, clipPreviewId;
 
@@ -1190,29 +1196,31 @@ function timelineView() {
       previewLanguage.value = preferred || languages[0];
       previewLanguages = [...languages];
     }
-    languageField.hidden = mode.value !== "scene" || previewLanguages.length < 2;
+    languageField.hidden = !interactive() || previewLanguages.length < 2;
   }
 
   function updateScenePreview() {
     syncPreviewLanguages();
     const clip = draft.clips[selectedClip];
-    if (mode.value !== "scene" || !clip) return;
+    if (!interactive() || !clip) return;
     editorPreview = {project: projectId, mode: mode.value, language: previewLanguage.value};
-    const spec = {clip, language: previewLanguage.value, aspect: draft.aspect,
+    const view = mode.value;
+    const language = previewLanguage.value;
+    const spec = view === "cut" ? {timeline: draft, language} : {clip, language, aspect: draft.aspect,
       resolution: draft.resolution, subtitles: draft.subtitles, watermark: draft.watermark};
-    const key = JSON.stringify(spec);
+    const key = JSON.stringify([view, spec]);
     if (key === sceneKey) return;
     sceneKey = key;
     const request = ++sceneRequest;
-    const stillSelected = () => activeScenePreview === scenePlayer && request === sceneRequest && mode.value === "scene";
-    const endpoint = path("/timeline/scene-preview");
+    const stillSelected = () => activeScenePreview === scenePlayer && request === sceneRequest && mode.value === view;
+    const endpoint = path("/timeline/" + view + "-preview");
     scenePlayer.updating();
     clearTimeout(sceneTimer);
     sceneTimer = setTimeout(async () => {
       if (!stillSelected()) return;
       try {
-        const plan = await api(endpoint, "POST", JSON.parse(key));
-        if (stillSelected()) scenePlayer.apply(plan);
+        const plan = await api(endpoint, "POST", JSON.parse(key)[1]);
+        if (stillSelected()) scenePlayer.apply(plan, draft.clips[selectedClip]?.scene);
       } catch (error) {
         if (stillSelected()) {
           sceneKey = null;
@@ -1225,7 +1233,7 @@ function timelineView() {
   function useScenePreview(lang) {
     if (lang && !previewLanguages.includes(lang)) return;
     if (lang) previewLanguage.value = lang;
-    mode.value = "scene";
+    if (!interactive()) mode.value = "scene";
     showPreview();
   }
 
@@ -1235,12 +1243,15 @@ function timelineView() {
     syncPreviewLanguages();
     editorPreview = {project: projectId, mode: mode.value, language: previewLanguage.value};
     assemblyBadge.hidden = mode.value !== "assembly";
-    if (mode.value === "scene") {
+    if (interactive()) {
       media = scenePlayer.element;
-      previewInfo.textContent = tr("Cut, narration and captions. Check the music, effects and transitions in the assembly.",
-        "Corte, narração e legendas. Confira trilha, efeitos e transições na montagem.");
+      previewInfo.textContent = mode.value === "cut" ? tr("Interactive cut. Use the rendered assembly for approval.",
+        "Prévia interativa do corte. Use a montagem renderizada para aprovar.") :
+        tr("Cut, narration and captions. Check the music, effects and transitions in the assembly.",
+          "Corte, narração e legendas. Confira trilha, efeitos e transições na montagem.");
       if (clip) updateScenePreview();
       else scenePlayer.error(tr("Select a scene to preview it.", "Escolha uma cena para assistir aqui."));
+      if (mode.value === "cut" && seekToScene && clip) scenePlayer.jump(clip.scene);
     } else if (mode.value === "clip") {
       const source = footage(clip);
       if (source?.id !== clipPreviewId) {
@@ -1271,7 +1282,7 @@ function timelineView() {
       clearTimeout(sceneTimer);
       sceneRequest++;
       sceneKey = null;
-      scenePlayer.halt();
+      scenePlayer.clear();
     } else previewMedia?.pause();
     panel.replaceChildren(media || node("p", {class: "muted"},
       tr("Your preview will appear here.", "Sua prévia vai aparecer aqui.")));
@@ -1292,7 +1303,7 @@ function timelineView() {
     };
     language.addEventListener("change", () => {
       showText();
-      if (mode.value === "scene") useScenePreview(language.value);
+      if (interactive()) useScenePreview(language.value);
     });
     text.addEventListener("input", () => {
       const value = text.value.trim();
@@ -1337,7 +1348,9 @@ function timelineView() {
   }
 
   mode.addEventListener("change", () => showPreview(true));
+  mode.addEventListener("input", event => event.stopPropagation());
   previewLanguage.addEventListener("change", updateScenePreview);
+  previewLanguage.addEventListener("input", event => event.stopPropagation());
   if (rendered) {
     rendered.addEventListener("timeupdate", () => {
       if (mode.value !== "assembly" || inspector.contains(document.activeElement)) return;
@@ -2638,7 +2651,8 @@ async function start() {
 ui("workspace").addEventListener("input", () => { editing = true; });
 
 function watchingPreview() {
-  const player = ui("workspace").querySelector(".preview-stage video");
+  if (activeScenePreview?.playing()) return true;
+  const player = ui("workspace").querySelector(".preview-stage video:not([hidden])");
   return player && !player.paused && !player.ended;
 }
 

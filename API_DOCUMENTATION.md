@@ -39,6 +39,7 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | POST /api/projects/{project}/reviews | Record `versions`, `status` and optional `comment`. |
 | GET /api/projects/{project}/timeline | Read the current saved timeline, or pass `?revision=<id>` for an earlier revision. |
 | PUT /api/projects/{project}/timeline | Save an editing draft, including clips, languages and output options. Returns the saved revision and its `ETag`. |
+| POST /api/projects/{project}/timeline/cut-preview | Compile the submitted `timeline` for one of its `language` tracks. Returns ordered scene timings, caption cues and project-scoped media URLs for interactive playback. |
 | GET /api/projects/{project}/delivery | Review the current saved cut, its scene timings, exact material versions and output settings. |
 | POST /api/projects/{project}/delivery/materials | Approve the materials of selected `scenes` with the saved `revision`, matching `versions` and `confirmed: true`. |
 | POST /api/projects/{project}/delivery/prepare | After material approval, save the unwatermarked cut with the same `revision`, all its material `versions` and `confirmed: true`. |
@@ -67,6 +68,8 @@ For the first edit in a project, quote `{"operation":"rough_cut","provider":"loc
 A script section can supply `evidence_graphic` with `layout` set to `sequence`, `alignment`, `coupling` or `routes`, exactly two `labels`, optional `annotation` and a `reveal_at` time in seconds within the section. The section must cite at least one entry in `sources`. First-cut rendering animates the highlight on a continuous shot and shows the source titles and an illustrative schematic label. See the [E02 diagram settings](docs/hyphotenic-e02-diagramas.json).
 
 Copy the current timeline's `ETag` into `If-Match` when saving, or pass `If-None-Match: *` when creating the first timeline. A conflicting write returns 412. Repeating a save with the same document returns its existing revision. When an assembly uses a saved timeline, the quote, assembly and export reference that revision. A new save supersedes older quotes and queued assemblies for that timeline. Earlier media remains available from its version URL.
+
+The cut preview compiles an unsaved or saved timeline in a read-only transaction. Send `{"timeline": <document>, "language": "pt-BR"}` with the editor's project-owner session. Scene starts and durations use seconds. Caption cues are relative to the scene start. Fetch the returned media URLs with the same session. Approve the immutable rendered assembly to authorize export.
 
 The delivery screen reviews the storyboard, reference frames, takes and narration for the selected cut. It records the operator and source cut in material approval events. Delivery preparation binds the reviewed inputs to its saved revision, so changed inputs require a new preparation before rendering. The owner quotes and authorizes the unwatermarked assembly, reviews its MP4, then authorizes the export of that approved version.
 
