@@ -1930,6 +1930,96 @@ function timelineView() {
     ui("workspace").focus();
   }
 
+  async function combineTimeline() {
+    const target = projectId;
+    await refresh(false);
+    if (projectId !== target || timelineDraft !== draft || page !== "timeline") return;
+    const latest = current("timeline");
+    saved = latest;
+    refreshTimelineState();
+    if (latest?.id === timelineBase) {
+      ui("dialog").close();
+      return;
+    }
+    const base = project.versions.find(version => version.id === timelineBase);
+    const plan = mergeTimelineDraft(base?.data, draft, latest?.data, project.scenes);
+    const heading = tr("Combine timeline versions", "Combinar versões da linha do tempo");
+    if (!plan) {
+      modal(heading, node("p", {}, tr(
+        "The versions need the same storyboard scenes and a saved starting revision. Your draft is still open.",
+        "As versões precisam ter as mesmas cenas do storyboard e um corte de origem salvo. Seu rascunho continua aberto.")),
+      [button(tr("Load saved timeline", "Carregar versão salva"), loadSavedTimeline)]);
+      return;
+    }
+    const names = {
+      order: ["Scene order", "Ordem das cenas"], picture: ["Take and timing", "Tomada e duração"],
+      narration_offset: ["Narration offset", "Atraso da narração"], effect: ["Sound effect", "Efeito sonoro"],
+      transition: ["Transition", "Transição"], caption: ["Caption", "Legenda"], aspect: ["Aspect ratio", "Proporção"],
+      resolution: ["Resolution", "Resolução"], subtitles: ["Subtitles", "Legendas"], watermark: ["Watermark", "Marca d’água"],
+      music: ["Music", "Trilha sonora"], output: ["Languages and metadata", "Idiomas e metadados"],
+    };
+    const sceneTitle = scene => sceneData(scene)?.data.title || scene;
+    const number = new Intl.NumberFormat(locale === "pt" ? "pt-BR" : "en-US", {maximumFractionDigits: 3});
+    const seconds = value => number.format(value) + " s";
+    const assetName = (id, fallback) => {
+      if (!id) return fallback;
+      const asset = project.versions.find(version => version.id === id);
+      return asset?.data.title || (asset ? "v" + asset.seq : id.slice(0, 8));
+    };
+    const describe = (field, value) => {
+      switch (field) {
+        case "order": return value.map(sceneTitle).join(" → ");
+        case "picture": return [
+          assetName(value.video, tr("Current take", "Tomada atual")),
+          tr("Trim ", "Corte inicial ") + seconds(value.trim),
+          value.seconds == null ? tr("Scene duration", "Duração da cena") : seconds(value.seconds),
+        ].join(" · ");
+        case "caption": return value ?? tr("From narration", "Da narração");
+        case "narration_offset": return seconds(value);
+        case "effect": return assetName(value, tr("None", "Nenhum"));
+        case "transition": return value === "fade" ? tr("Fade to black", "Fade para preto") : tr("Cut", "Corte");
+        case "resolution": return value + "p";
+        case "music": return assetName(value.music, tr("None", "Nenhuma")) + " · " + Math.round(value.music_volume * 100) + "%";
+        case "output": return value.languages.map(language => [
+          language, value.metadata[language]?.title, value.metadata[language]?.description,
+        ].filter(Boolean).join(" · ")).join("\n");
+        default: return typeof value === "boolean" ? (value ? tr("On", "Ativado") : tr("Off", "Desativado")) : value;
+      }
+    };
+    const choices = [];
+    const conflictRows = plan.conflicts.map(change => {
+      const title = [change.scene && sceneTitle(change.scene), tr(...names[change.field]), change.language].filter(Boolean).join(" · ");
+      const mine = tr("My draft", "Meu rascunho"), currentCut = tr("Saved cut", "Corte salvo");
+      const choice = select([["", tr("Choose a version", "Escolha uma versão")], ["mine", mine], ["current", currentCut]]);
+      choice.setAttribute("aria-label", tr("Keep for ", "Manter em ") + title);
+      choice.addEventListener("change", () => { confirm.disabled = choices.some(option => !option.value); });
+      choices.push(choice);
+      return card(
+        node("h3", {}, title),
+        node("div", {class: "proposal-diff"}, [["mine", mine], ["current", currentCut]].map(([side, name]) =>
+          node("div", {class: "proposal-value"}, small(name), node("p", {}, describe(change.field, change[side]))))),
+        label(tr("Keep", "Manter"), choice));
+    });
+    const confirm = button(tr("Open combined draft", "Abrir rascunho combinado"), () => {
+      const selectedScene = draft.clips[selectedClip]?.scene;
+      plan.conflicts.forEach((change, index) => change.apply(structuredClone(change[choices[index].value])));
+      timelineDraft = plan.draft;
+      timelineBase = latest.id;
+      timelineInitial = json(latest.data);
+      recovery.reset();
+      timelineStored = json(timelineDraft) !== timelineInitial && recovery.write(timelineBase, timelineDraft, selectedScene);
+      selectedClip = Math.max(0, timelineDraft.clips.findIndex(clip => clip.scene === selectedScene));
+      ui("dialog").close();
+      render();
+      ui("workspace").focus();
+    }, true, choices.length > 0);
+    modal(heading, stack(node("p", {}, choices.length ?
+      tr("Choose what to keep for each overlapping edit.", "Escolha o que manter em cada ajuste que mudou nas duas versões.") :
+      tr("The edits can be combined.", "Os ajustes podem ser combinados.")),
+      plan.reapplied > 0 && small(tr("Edits carried over · ", "Ajustes reaproveitados · ") + plan.reapplied),
+      conflictRows), [confirm]);
+  }
+
   async function saveTimeline() {
     const target = projectId;
     const draftData = json(draft);
@@ -1945,6 +2035,7 @@ function timelineView() {
             "Outra revisão foi salva. Você pode carregá-la e voltar aos seus ajustes pelos rascunhos deste navegador.") :
           tr("Another revision was saved. Load it to discard the edits in this tab.",
             "Outra revisão foi salva. Carregue-a para descartar os ajustes desta aba.")), [
+          button(tr("Combine versions", "Combinar versões"), combineTimeline, true),
           button(tr("Load saved timeline", "Carregar versão salva"), loadSavedTimeline),
         ]);
       return null;
@@ -1998,8 +2089,9 @@ function timelineView() {
       reviewReference),
     sequence, inspector));
   const loadSaved = button(tr("Open saved cut", "Abrir corte salvo"), loadSavedTimeline);
+  const combine = button(tr("Combine versions", "Combinar versões"), combineTimeline, true);
   const browserDrafts = button(tr("Browser drafts", "Rascunhos neste navegador"), openBrowserDrafts);
-  const result = stack(title(project.data.title), row((!rough || timelineStored) && draftInfo, loadSaved, browserDrafts),
+  const result = stack(title(project.data.title), row((!rough || timelineStored) && draftInfo, combine, loadSaved, browserDrafts),
     rough || content,
   !rough && controls,
     assembly && card(node("h2", {}, tr("Review rendered version", "Revisar versão renderizada")), reviewControls(assembly),
@@ -2016,6 +2108,7 @@ function timelineView() {
   const refreshTimelineState = () => {
     refreshDraftInfo();
     loadSaved.hidden = !timelineStored || !saved || (saved.id === timelineBase && json(saved.data) === json(draft));
+    combine.hidden = !saved || saved.id === timelineBase;
     browserDrafts.hidden = !recovery.hasOthers();
     browserDrafts.disabled = !timelineStored && json(draft) !== timelineInitial;
     updateScenePreview();
