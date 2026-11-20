@@ -1283,6 +1283,13 @@ class Workbench(Store):
                 (request.actual, jid),
             )
 
+    def _runway_recovery(self, db, job):
+        if not self._current(db, job):
+            return "inputs_changed"
+        if self._slot_has_active_job(db, job["project"], job["slot"]):
+            return "wait_for_slot"
+        return "resume_provider_task"
+
     def reconcile(self, actor, pid, jid):
         with self.transaction() as db:
             self.project(db, actor, pid)
@@ -1293,12 +1300,13 @@ class Workbench(Store):
                 return
             if job["status"] != "FAILED":
                 raise RuleError("A failed job with a recorded Runway task is required")
-            if self._slot_has_active_job(db, pid, job["slot"]):
-                raise RuleError("Another job is already active for this asset")
-            if not self._current(db, job):
+            recovery = self._runway_recovery(db, job)
+            if recovery == "inputs_changed":
                 raise RuleError(
                     "The job's inputs changed. Verify its charge with Runway."
                 )
+            if recovery == "wait_for_slot":
+                raise RuleError("Another job is already active for this asset")
             now = time.time()
             db.execute(
                 "UPDATE jobs SET status='DRAFT',available=?,cancel=0,polls=0,poll_deadline=? WHERE id=?",
@@ -1334,19 +1342,27 @@ class Workbench(Store):
                     asset["draft_preview"] = True
                 seen_slots.add(asset["slot"])
                 versions.append(asset)
-            jobs = [
-                unpack(row, "settlement")
-                for row in db.execute(
-                    """SELECT j.id,j.slot,j.operation,j.provider,j.status,j.attempts,
-                j.progress,j.last_error,j.result,j.created,j.cancel,j.remote,j.quote,l.quoted,l.reserved,l.actual,l.uncertain,
-                json_extract(j.spec,'$.model') AS model,
-                COALESCE((SELECT json_object('actual',s.actual,'receipt',s.receipt,'created',s.created)
-                 FROM settlements s WHERE s.job=j.id ORDER BY s.id DESC LIMIT 1),'null') AS settlement
-                FROM jobs j JOIN ledger l ON l.job=j.id
-                WHERE j.project=? ORDER BY j.created DESC,j.ordinal""",
-                    (pid,),
+            jobs = []
+            for row in db.execute(
+                """SELECT j.id,j.slot,j.operation,j.provider,j.status,j.attempts,
+            j.progress,j.last_error,j.result,j.created,j.cancel,j.remote,j.quote,l.quoted,l.reserved,l.actual,l.uncertain,
+            json_extract(j.spec,'$.model') AS model,
+            CASE WHEN j.provider='runway' AND j.status='FAILED' AND j.remote IS NOT NULL
+                THEN j.spec ELSE 'null' END AS recovery_spec,
+            COALESCE((SELECT json_object('actual',s.actual,'receipt',s.receipt,'created',s.created)
+             FROM settlements s WHERE s.job=j.id ORDER BY s.id DESC LIMIT 1),'null') AS settlement
+            FROM jobs j JOIN ledger l ON l.job=j.id
+            WHERE j.project=? ORDER BY j.created DESC,j.ordinal""",
+                (pid,),
+            ):
+                job = unpack(row, "settlement", "recovery_spec")
+                spec = job.pop("recovery_spec")
+                job["recovery_action"] = (
+                    self._runway_recovery(db, dict(job, project=pid, spec=spec))
+                    if spec is not None
+                    else None
                 )
-            ]
+                jobs.append(job)
             reviews = [
                 dict(row)
                 for row in db.execute(

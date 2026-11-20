@@ -665,6 +665,7 @@ function dashboard() {
   return stack(title(d.title, badge(project.stage)),
     rough || row(button(needsVoice ? tr("Prepare narration", "Preparar narração") : tr(en, pt),
       () => navigate(needsVoice ? "narration" : next), true)),
+    jobAttention(),
     node("p", {}, d.topic), small([d.audience, d.languages.join(", "), d.duration + " s"].join(" · ")),
     d.profile && profileOverview(d),
     d.editorial && card(node("h2", {}, d.editorial.id + " · " + d.editorial.series),
@@ -1307,7 +1308,9 @@ function scenesView() {
       const usesFlow = scene.data.provider === "google_flow";
       const jobs = project.jobs.filter(job => job.slot === "video/" + sid);
       const generating = jobs.some(job => ["DRAFT", "GENERATING"].includes(job.status));
+      const attention = jobs.find(needsJobAttention);
       return card(row(node("h2", {}, scene.data.title), assetBadge(clip)), mediaPreview(clip),
+        attention && row(jobAttentionLink(attention)),
         clip?.data.source_provider === "google_flow" && small(tr("Imported from Google Flow", "Importado do Google Flow")),
         node("p", {}, scene.data.narration), small([usesFlow ? flowOption()[1] : `${scene.data.provider} · ${scene.data.model}`, scene.data.seconds + " s",
           clip ? clip.data.resolution + "p" : "", jobs.reduce((sum, job) => sum + job.attempts, 0) + " " + tr("attempts", "tentativas")]
@@ -2902,13 +2905,14 @@ async function experimentsView() {
 }
 
 function jobHistory() {
-  const needsAttention = project.jobs.some(job => isActiveJob(job) || job.uncertain > 0);
+  const needsAttention = project.jobs.some(job => isActiveJob(job) || needsJobAttention(job));
   return node("details", {open: needsAttention}, node("summary", {},
     tr("Job history", "Histórico de trabalhos") + " (" + project.jobs.length + ")"), jobsTable());
 }
 
 const isActiveJob = job => ["DRAFT", "GENERATING"].includes(job.status);
-const canResumeRunway = job => job.provider === "runway" && job.remote && job.status === "FAILED";
+const canResumeRunway = job => job.recovery_action === "resume_provider_task";
+const needsJobAttention = job => !isActiveJob(job) && (job.uncertain > 0 || canResumeRunway(job));
 const jobNames = {
   rough_cut: ["First draft", "Primeiro rascunho"], image: ["Image", "Imagem"],
   video: ["Video", "Vídeo"], voice: ["Narration", "Narração"], translation: ["Translation", "Tradução"],
@@ -2924,19 +2928,43 @@ const jobMessages = {
   "Cancelled before execution": ["Cancelled before execution", "Cancelado antes da execução"],
 };
 
+function jobHeading(job) {
+  const operation = jobNames[job.operation] || navLabels[job.operation] || [job.operation, job.operation];
+  const subject = job.slot.split("/")[1];
+  const scene = subject && sceneData(subject)?.data.title;
+  return [tr(...operation), scene].filter(Boolean).join(" · ");
+}
+
+function jobAttentionLink(job) {
+  const href = "/?project=" + project.id + "&view=costs&job=" + job.id;
+  const label = canResumeRunway(job) ? tr("Open task recovery", "Abrir retomada da tarefa") :
+    tr("Review pending charge", "Conferir cobrança pendente");
+  return node("a", {href, onclick: event => {
+    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    history.replaceState(null, "", href);
+    navigate("costs");
+  }}, label);
+}
+
+function jobAttention() {
+  const items = project.jobs.filter(needsJobAttention);
+  if (!items.length) return null;
+  const next = items.find(canResumeRunway) || items[0];
+  return card(row(node("h2", {}, tr("Jobs that need attention", "Trabalhos que precisam de atenção")), small(items.length)),
+    row(node("strong", {}, jobHeading(next)), jobAttentionLink(next)));
+}
+
 function jobsTable(requested = null) {
   const currency = project.costs.currency;
-  const activeSlots = new Set(project.jobs.filter(isActiveJob).map(job => job.slot));
   const priority = job => job.id === requested ? -1 :
-    isActiveJob(job) ? 0 : job.uncertain > 0 || canResumeRunway(job) ? 1 : 2;
+    isActiveJob(job) ? 0 : needsJobAttention(job) ? 1 : 2;
   const jobs = [...project.jobs].sort((a, b) => priority(a) - priority(b)).slice(0, 40);
   return card(row(node("h2", {}, tr("Jobs", "Trabalhos")), button(tr("Refresh", "Atualizar"), refresh)),
     requested && !jobs.some(job => job.id === requested) &&
       node("p", {role: "status"}, tr("This job is unavailable in the current project.", "Este trabalho não está disponível no projeto atual.")),
     ...jobs.map(job => {
       const active = isActiveJob(job);
-      const resume = canResumeRunway(job);
-      const slotBusy = resume && activeSlots.has(job.slot);
       const endpoint = path("/jobs/" + job.id);
       const confirmSettlement = () => {
         const amount = input("", {type: "number", min: 0, step: ".01"});
@@ -2966,12 +2994,9 @@ function jobsTable(requested = null) {
             ui("dialog").close();
           }, true)]);
       };
-      const operation = jobNames[job.operation] || navLabels[job.operation] || [job.operation, job.operation];
       const message = jobMessages[job.last_error];
-      const subject = job.slot.split("/")[1];
-      const scene = subject && sceneData(subject)?.data.title;
       const info = [job.provider, job.model, active ? job.progress + "%" : null].filter(Boolean).join(" · ");
-      const heading = [tr(...operation), scene].filter(Boolean).join(" · ");
+      const heading = jobHeading(job);
       const result = job.result && project.versions.find(version => version.id === job.result);
       const focused = job.id === requested;
       return node("section", {id: "job-" + job.id, class: "card stack job-details", tabindex: focused ? "-1" : null,
@@ -2986,14 +3011,17 @@ function jobsTable(requested = null) {
       job.settlement && small(tr("Verified charge · ", "Cobrança verificada · ") + format(job.settlement.actual, currency) +
         " · " + tr("Receipt ", "Recibo ") + job.settlement.receipt),
       job.remote && small(tr("Provider task · ", "Tarefa no provedor · ") + job.remote),
-      resume && small(slotBusy ?
-        tr("Wait for the active job for this asset to finish.", "Aguarde o trabalho ativo para esta tomada terminar.") :
-        tr("Resume checking the original Runway task.", "Retome a consulta da tarefa original no Runway.")),
+      job.recovery_action === "wait_for_slot" && small(tr(
+        "Wait for the active job for this asset to finish.", "Aguarde o trabalho ativo para esta tomada terminar.")),
+      job.recovery_action === "inputs_changed" && small(tr(
+        "The inputs of the original Runway task have changed.", "Os insumos da tarefa original no Runway mudaram.")),
+      canResumeRunway(job) && small(tr(
+        "Resume checking the original Runway task.", "Retome a consulta da tarefa original no Runway.")),
       job.last_error && !active && node("p", {}, message ? tr(...message) : job.last_error),
       row(active && !job.cancel && button(tr("Cancel", "Cancelar"), cancelJob),
         result?.url && node("a", {href: result.url, target: "_blank", rel: "noopener"},
           tr("Open result · v", "Abrir resultado · v") + result.seq),
-        resume && !slotBusy && button(tr("Resume Runway task check", "Retomar consulta no Runway"),
+        canResumeRunway(job) && button(tr("Resume Runway task check", "Retomar consulta no Runway"),
           () => mutate(endpoint + "/reconcile", "POST"), true),
         job.uncertain > 0 && button(tr("Record verified charge", "Registrar cobrança verificada"), confirmSettlement),
         button(tr("View authorization", "Ver autorização"), async () => {
@@ -3603,7 +3631,8 @@ function navigate(name) {
   if (name !== "delivery") reviewReturnFocus = null;
   page = name;
   render();
-  ui("workspace").focus();
+  const workspace = ui("workspace");
+  if (!workspace.contains(document.activeElement)) workspace.focus();
 }
 
 async function start() {

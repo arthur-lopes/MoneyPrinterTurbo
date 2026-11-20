@@ -243,18 +243,13 @@ class AgentProjects:
         next_action = None
         if state in ACTIVE:
             next_action = "wait"
-        elif state == "FAILED" and row["provider"] == "runway" and row["has_task"]:
-            job = self.store._job(db, pid, row["id"])
-            if not self.store._current(db, job):
-                next_action = "review_failure"
-            else:
-                next_action = (
-                    "wait_for_slot"
-                    if self.store._slot_has_active_job(db, pid, row["slot"])
-                    else "resume_provider_task"
-                )
         elif state == "FAILED":
             next_action = "review_failure"
+            if row["provider"] == "runway" and row["has_task"]:
+                job = self.store._job(db, pid, row["id"])
+                recovery = self.store._runway_recovery(db, job)
+                if recovery != "inputs_changed":
+                    next_action = recovery
         if asset:
             fresh = self.store.fresh(db, asset, visited)
             head = self.store.head(db, pid, asset["slot"])

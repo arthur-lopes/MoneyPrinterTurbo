@@ -130,6 +130,8 @@ Scene evidence includes `scene_version`, `script_version`, `research_version`, `
 
 The job response includes a relative `owner_url` for opening its card in Costs and a scoped `result.url` when the job produced media. The result identifies its version and whether it is current and fresh. Progress is present for active and completed jobs. Use `next_action` to monitor active jobs (`wait`, `wait_for_slot`) or notify the owner (`resume_provider_task`, `verify_charge`, `review_failure`, `review_result`). A job can also require billing review while another action is pending. Both agent scopes can inspect jobs. Generation, cancellation, provider task recovery and receipts use the owner interface.
 
+The owner project snapshot exposes `jobs[].recovery_action` for failed Runway jobs with a recorded task. The values are `resume_provider_task`, `wait_for_slot`, and `inputs_changed`. Other jobs return null. The recovery endpoint rechecks the current inputs and slot before queuing the same task.
+
 ```powershell
 # Set MPT_AGENT_TOKEN in the process environment from the issued credential.
 python -m app.production.agent_cli --project-url $projectApi context
