@@ -784,6 +784,18 @@ def create_app(
     def export_costs(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
         return deliveries.costs(actor, pid, version)
 
+    @app.post("/api/projects/{pid}/exports/{version}/expenses")
+    def record_export_expense(
+        pid: m.Id, version: m.Id, body: delivery.MediaExpense, actor=Depends(authenticated)
+    ):
+        return deliveries.record_expense(actor, pid, version, body)
+
+    @app.get("/api/projects/{pid}/external-expenses/{receipt}/history")
+    def external_expense_history(
+        pid: m.Id, receipt: m.Id, actor=Depends(authenticated)
+    ):
+        return deliveries.expense_history(actor, pid, receipt)
+
     @app.post("/api/projects/{pid}/delivery/materials")
     def approve_delivery_materials(
         pid: m.Id, body: delivery.MaterialReview, actor=Depends(authenticated)

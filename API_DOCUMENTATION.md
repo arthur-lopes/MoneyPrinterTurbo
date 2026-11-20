@@ -44,6 +44,8 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | GET /api/projects/{project}/scenes/{scene}/evidence | Read the editorial categories and cited sources for the scene's recorded research revision. |
 | GET /api/projects/{project}/delivery | Review the current saved cut, its scene timings, exact material versions and output settings. |
 | GET /api/projects/{project}/exports/{version}/costs | Owner-only costs through an exact export. Amounts are integer minor units in the project currency. |
+| POST /api/projects/{project}/exports/{version}/expenses | Record a paid external receipt for eligible media in the exact export. Send `provider`, `receipt`, integer `amount`, the version IDs in `materials`, `request_id` and `confirmed: true`. To correct a receipt, pass its latest record ID as `expected_version`. |
+| GET /api/projects/{project}/external-expenses/{receipt}/history | Owner-only history of all versions of a receipt, using any of its record IDs. |
 | POST /api/projects/{project}/delivery/materials | Approve the materials of selected `scenes` with the saved `revision`, matching `versions` and `confirmed: true`. |
 | POST /api/projects/{project}/delivery/prepare | After material approval, save the unwatermarked cut with the same `revision`, all its material `versions` and `confirmed: true`. |
 | GET, POST /api/projects/{project}/assemblies/{version}/notes | List timestamped review notes on one assembly or add `body`, integer `position_ms` and a `request_id`. |
@@ -63,6 +65,8 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 Job operations are `research`, `script`, `image`, `video`, `translation`, `voice`, `rough_cut`, `assembly`, `export` and `analysis`. Include the scene ID for scene operations and the language for translation and voice. Pass the saved timeline ID as `version` for assembly or pass an inline `timeline`. Export takes the approved assembly ID as `version`. Validation errors return 422. Missing private resources return 404. Conflicting versions, approvals or budgets return 409. Schema definitions are in `app/production/models.py`.
 
 Export costs include the project jobs created by the export timestamp. The same job set uses the latest verified charges, pending estimates and reservations, so a later receipt updates that export's report. The `materials` group follows the export's immutable version links and counts shared jobs once. The `other` group includes the remaining project work through that export. The response reports missing versions, missing ledger links, media with no linked job and subscription use. Approval refers to the source assembly's latest decision at the time of the export.
+
+External expenses use the project currency and eligible media version IDs with no generation job. Each report counts a receipt once when any of its linked versions is used. The same receipt can appear in reports for different revisions. The latest receipt version contributes to `external.actual` and `confirmed_total`. Corrections append to history and a zero amount reverses a receipt. Repeating a successful `request_id` with the same details returns its original record. External expense records leave provider authorizations and budget reservations unchanged.
 
 Set the project default `video` to `google_flow` or save a scene with `provider=google_flow` and `model=import`. Flow footage arrives through `/uploads` and uses the regular review and assembly workflow. Quoting automatic video generation for a Flow scene returns 409.
 

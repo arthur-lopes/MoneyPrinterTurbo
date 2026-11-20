@@ -2213,6 +2213,48 @@ function reviewNotes(assembly, player, items, activeNote, editNote) {
   return {add, panel: card(row(node("h2", {}, tr("Review notes", "Comentários da montagem")), count, filter), list)};
 }
 
+function expenseForm(cost, previous = null) {
+  const requestId = crypto.randomUUID().replaceAll("-", "");
+  const provider = input(previous?.provider || "", {maxlength:180, readonly: Boolean(previous)});
+  const receipt = input(previous?.receipt || "", {maxlength:180, readonly: Boolean(previous)});
+  const amount = input(previous ? (previous.amount / 100).toFixed(2) : "", {
+    type:"number", min:0, max:10000000, step:".01",
+  });
+  const outside = new Set(previous?.materials || []);
+  const kinds = {image: ["Image", "Imagem"], video: ["Take", "Tomada"], reference: ["Reference", "Referência"],
+    voice: ["Narration", "Narração"], audio: ["Audio", "Áudio"]};
+  const choices = cost.external.materials.map(asset => {
+    const scene = asset.slot.split("/")[1];
+    const labelText = [tr(...kinds[asset.kind]), scene && sceneData(scene)?.data.title,
+      asset.title, "v" + asset.seq].filter(Boolean).join(" · ");
+    const field = input("", {type:"checkbox", checked: outside.delete(asset.id)});
+    return {id:asset.id, field, labelText};
+  }).sort((a, b) => a.labelText.localeCompare(b.labelText));
+  const endpoint = path("/exports/" + cost.export + "/expenses");
+  modal(previous ? tr("Correct external expense", "Corrigir despesa externa") :
+    tr("Record external expense", "Registrar despesa externa"), stack(
+      node("p", {}, tr("Enter the amount already paid in the project currency and select every material covered by the receipt.",
+        "Informe o valor já pago na moeda do projeto e marque todos os materiais cobertos pelo recibo.")),
+      previous && small(tr("Use zero to reverse this entry. Earlier records remain in the history.",
+        "Use zero para estornar o lançamento. As versões anteriores ficam no histórico.")),
+      row(label(tr("Provider", "Fornecedor"), provider), label(tr("Receipt reference", "Referência do recibo"), receipt)),
+      label(tr("Amount paid", "Valor pago") + " (" + cost.currency + ")", amount),
+      outside.size > 0 && small(tr("Existing links outside this export are kept.", "Os vínculos com outras exportações são mantidos.")),
+      node("fieldset", {class:"stack expense-materials"},
+        node("legend", {}, tr("Materials covered by the receipt", "Materiais cobertos pelo recibo")),
+        choices.map(choice => label(choice.labelText, choice.field)))),
+    [button(tr("Confirm record", "Confirmar lançamento"), async () => {
+      const materials = [...outside, ...choices.filter(choice => choice.field.checked).map(choice => choice.id)];
+      if (!provider.value.trim() || !receipt.value.trim() || !amount.value || !amount.checkValidity() || !materials.length) {
+        throw new Error(tr("Enter the provider, receipt, amount and materials.",
+          "Informe o fornecedor, o recibo, o valor e os materiais."));
+      }
+      await mutate(endpoint, "POST", {request_id: requestId, provider: provider.value, receipt: receipt.value,
+        amount: Math.round(Number(amount.value) * 100), materials, expected_version:previous?.id ?? null, confirmed:true});
+      ui("dialog").close();
+    }, true)]);
+}
+
 function deliveryCosts(cost) {
   if (!cost) return null;
   const heading = tr("Costs through export", "Custos até a exportação");
@@ -2232,12 +2274,19 @@ function deliveryCosts(cost) {
       "Algumas versões vinculadas estão indisponíveis."),
     cost.missing_job_links > 0 && tr("Some version links have no ledger entry.",
       "Alguns vínculos de versão estão sem lançamento no estúdio."),
-    cost.media_without_job > 0 && tr("The export uses media with no linked generation job.",
-      "A exportação usa mídias sem trabalho de geração vinculado."),
+    cost.external.unrecorded_materials > 0 && tr("Some media has no recorded receipt.",
+      "Algumas mídias ainda estão sem recibo registrado."),
     cost.subscription_jobs > 0 && tr("Subscription usage is tracked by the provider.",
       "O consumo da assinatura é registrado pelo provedor."),
   ].filter(Boolean);
   const pending = cost.pending_job && "/?project=" + projectId + "&view=costs&job=" + cost.pending_job;
+  const history = async entry => {
+    const detailed = await api(path("/external-expenses/" + entry.id + "/history"));
+    modal(tr("Expense history", "Histórico da despesa"), stack(
+      node("p", {}, entry.provider + " · " + entry.receipt),
+      detailed.entries.map(item => node("p", {}, "v" + item.seq + " · " + money(item.amount) + " · " +
+        new Date(item.created * 1000).toLocaleString() + " · " + item.actor))));
+  };
   return card(
     node("h2", {}, heading + " v" + cost.seq),
     small(cost.approval ?
@@ -2245,6 +2294,8 @@ function deliveryCosts(cost) {
       tr("Assembly approval history unavailable for this export.", "Histórico de aprovação da montagem indisponível para esta exportação.")),
     node("div", {class: "grid stats"},
       metric(tr("Verified in the studio", "Confirmado no estúdio"), cost.totals.actual),
+      cost.external.entries.length > 0 && metric(tr("Recorded external costs", "Despesas externas registradas"), cost.external.actual),
+      cost.external.entries.length > 0 && metric(tr("Total verified", "Total confirmado"), cost.confirmed_total),
       metric(tr("Charges to verify", "Cobranças a verificar"), cost.totals.uncertain),
       cost.totals.reserved > 0 && metric(tr("Reserved", "Reservado"), cost.totals.reserved)),
     pending && node("a", {href: pending}, tr("Open job with a charge to verify", "Abrir trabalho com cobrança a verificar")),
@@ -2253,7 +2304,12 @@ function deliveryCosts(cost) {
     coverage.length > 0 && small(coverage.join(" ")),
     cost.totals.jobs > 0 && node("details", {}, node("summary", {}, tr("Cost breakdown", "Composição do custo")),
       summary(tr("Work linked to the final materials", "Trabalhos ligados aos materiais usados"), cost.materials),
-      summary(tr("Other project work before export", "Outros trabalhos do projeto até a exportação"), cost.other)));
+      summary(tr("Other project work before export", "Outros trabalhos do projeto até a exportação"), cost.other)),
+    cost.external.materials.length > 0 && row(button(tr("Record external expense", "Registrar despesa externa"), () => expenseForm(cost))),
+    cost.external.entries.map(entry => node("section", {class:"expense-record stack"},
+      node("strong", {}, entry.provider + " · " + entry.receipt + " · " + money(entry.amount)),
+      row(button(tr("Correct expense", "Corrigir despesa"), () => expenseForm(cost, entry)),
+        button(tr("Expense history", "Histórico da despesa"), () => history(entry))))));
 }
 
 async function deliveryView() {

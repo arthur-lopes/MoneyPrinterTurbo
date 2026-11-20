@@ -124,6 +124,9 @@ def test_export_costs_follow_immutable_versions_and_later_receipts(sandbox):
         audio = store.add(
             db, pid, "upload/music", "audio", {}, media=uuid4().hex + ".wav"
         )
+        imported = store.add(
+            db, pid, "upload/external", "reference", {}, media=uuid4().hex + ".png"
+        )
         picture = store.add(
             db,
             pid,
@@ -143,6 +146,7 @@ def test_export_costs_follow_immutable_versions_and_later_receipts(sandbox):
                 {"timeline_revision": timeline["id"]},
                 {"id": script["id"]},
                 {"id": audio["id"]},
+                {"id": imported["id"]},
                 {"id": picture["id"]},
                 {"id": uuid4().hex},
             ],
@@ -216,7 +220,8 @@ def test_export_costs_follow_immutable_versions_and_later_receipts(sandbox):
     }
     assert cost["pending_job"] == failed and cost["subscription_jobs"] == 1
     assert cost["missing_versions"] == cost["missing_job_links"] == 1
-    assert cost["media_without_job"] == 3
+    assert cost["media_without_job"] == 4
+    assert cost["external"]["unrecorded_materials"] == 2
     store.settle(
         actor,
         pid,
@@ -233,6 +238,84 @@ def test_export_costs_follow_immutable_versions_and_later_receipts(sandbox):
     assert settled["pending_job"] is None
     assert settled["approval"] == cost["approval"]
     assert settled["other"]["job_ids"] == cost["other"]["job_ids"]
+    expense_url = url.removesuffix("/costs") + "/expenses"
+    receipt = {
+        "request_id": uuid4().hex,
+        "provider": "Example vendor",
+        "receipt": "shared invoice 001",
+        "amount": 420,
+        "materials": [audio["id"], imported["id"]],
+        "confirmed": True,
+    }
+    other = {"Authorization": "Bearer " + "b" * 32}
+    assert client.post(expense_url, json=receipt, headers=other).status_code == 404
+    assert (
+        client.post(expense_url, json=dict(receipt, confirmed=False)).status_code == 422
+    )
+    assert (
+        client.post(
+            expense_url, json=dict(receipt, materials=[audio["id"], picture["id"]])
+        ).status_code
+        == 422
+    )
+    initial = client.post(expense_url, json=receipt).raise_for_status().json()
+    assert client.post(expense_url, json=receipt).json() == initial
+    assert client.post(expense_url, json=dict(receipt, amount=421)).status_code == 409
+    assert (
+        client.post(expense_url, json=dict(receipt, request_id=uuid4().hex)).status_code
+        == 409
+    )
+    updated = client.get(url).raise_for_status().json()
+    assert updated["totals"] == settled["totals"]
+    assert updated["external"]["actual"] == 420 and updated["confirmed_total"] == 725
+    assert updated["external"]["unrecorded_materials"] == 0
+    assert len(updated["external"]["entries"]) == 1
+    correction = dict(
+        receipt, request_id=uuid4().hex, expected_version=initial["id"], amount=380
+    )
+    current = client.post(expense_url, json=correction).raise_for_status().json()
+    assert current["seq"] == 2 and current["expected_version"] == initial["id"]
+    assert client.post(expense_url, json=correction).json() == current
+    assert (
+        client.post(
+            expense_url, json=dict(correction, request_id=uuid4().hex, amount=300)
+        ).status_code
+        == 409
+    )
+    history_url = f"/api/projects/{pid}/external-expenses/{initial['id']}/history"
+    assert client.get(history_url).json() == {"entries": [current, initial]}
+    assert client.get(history_url, headers=other).status_code == 404
+    assert client.get(url).json()["confirmed_total"] == 685
+    with store.transaction() as db:
+        reused = store.add(
+            db,
+            pid,
+            "export",
+            "export",
+            {},
+            [{"id": audio["id"]}],
+            media=uuid4().hex + ".mp4",
+        )
+        separate = store.add(
+            db, pid, "export", "export", {}, media=uuid4().hex + ".mp4"
+        )
+    assert (
+        client.get(url.replace(exported["id"], reused["id"])).json()["external"][
+            "actual"
+        ]
+        == 380
+    )
+    assert (
+        client.get(url.replace(exported["id"], separate["id"])).json()["external"][
+            "actual"
+        ]
+        == 0
+    )
+    voided = dict(
+        correction, request_id=uuid4().hex, expected_version=current["id"], amount=0
+    )
+    assert client.post(expense_url, json=voided).raise_for_status().json()["seq"] == 3
+    assert client.get(url).json()["confirmed_total"] == 305
 
 
 def paid(

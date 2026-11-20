@@ -46,6 +46,14 @@ CREATE TABLE IF NOT EXISTS review_note_events (
     state TEXT NOT NULL, actor TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY(note, seq)
 );
 CREATE INDEX IF NOT EXISTS assembly_review_notes ON review_notes(project, assembly, position_ms);
+CREATE TABLE IF NOT EXISTS media_expenses (
+    id TEXT PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(id),
+    receipt_key TEXT NOT NULL, seq INTEGER NOT NULL, request_id TEXT NOT NULL,
+    provider TEXT NOT NULL, receipt TEXT NOT NULL, amount INTEGER NOT NULL,
+    materials TEXT NOT NULL, submitted_for TEXT NOT NULL REFERENCES versions(id),
+    expected_version TEXT REFERENCES media_expenses(id), actor TEXT NOT NULL, created REAL NOT NULL,
+    UNIQUE(project, receipt_key, seq), UNIQUE(project, request_id)
+);
 CREATE TABLE IF NOT EXISTS providers (
     owner TEXT NOT NULL, provider TEXT NOT NULL, operation TEXT NOT NULL, currency TEXT NOT NULL,
     data TEXT NOT NULL, PRIMARY KEY(owner, provider, operation, currency)
