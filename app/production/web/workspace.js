@@ -1144,6 +1144,55 @@ function retentionPanel(assembly) {
       tr("YouTube retention report", "Relatório de retenção do YouTube")));
 }
 
+function sceneEvidence(scene, sceneTitle) {
+  const endpoint = path("/scenes/" + scene + "/evidence");
+  const content = stack();
+  const details = node("details", {},
+    node("summary", {}, tr("Scene sources", "Fontes da cena")), content);
+  const categories = {
+    verified: ["Verified in script", "Verificado no roteiro"],
+    assumption: ["Assumption", "Premissa"],
+    speculation: ["Speculation", "Especulação"],
+    uncertain: ["Uncertain", "Incerto"],
+  };
+  let loading = false, loaded = false;
+  async function load() {
+    if (!details.open || loading || loaded) return;
+    loading = true;
+    content.replaceChildren(node("p", {role: "status"}, tr("Loading sources…", "Carregando fontes…")));
+    try {
+      const evidence = await api(endpoint);
+      if (!details.isConnected) return;
+      loaded = true;
+      content.replaceChildren(stack(
+        evidence.binding === "historical" && small(tr("Sources reconstructed from the script of that revision.",
+          "Fontes recuperadas do roteiro da época.")),
+        !evidence.fresh && small(tr("This scene needs review. Its original sources are shown here.",
+          "Esta cena precisa de revisão. As fontes originais aparecem aqui.")),
+        evidence.sections.length ? evidence.sections.map(section => stack(
+          (evidence.sections.length > 1 || section.title !== sceneTitle) && node("h3", {}, section.title),
+          small(tr(...(categories[section.category] || categories.uncertain))),
+          section.sources.length ? node("ul", {}, section.sources.map(source => node("li", {},
+            /^https?:\/\//i.test(source.url) ? node("a", {href: source.url, target: "_blank", rel: "noopener noreferrer"},
+              source.title) : source.title,
+            node("p", {class: "review-note-text"}, source.excerpt)))) :
+            small(tr("No source was recovered for this section.", "Nenhuma fonte foi recuperada para esta seção.")),
+        )) : node("p", {}, tr("No research is linked to this scene.", "Esta cena não tem pesquisa vinculada."))));
+    } catch {
+      if (details.isConnected) content.replaceChildren(
+        node("p", {role: "status"}, tr("Could not load source material.", "Não foi possível carregar as fontes.")),
+        button(tr("Try again", "Tentar de novo"), () => {
+          details.querySelector("summary").focus();
+          return load();
+        }));
+    } finally {
+      loading = false;
+    }
+  }
+  details.addEventListener("toggle", load);
+  return details;
+}
+
 function timelineView() {
   let saved = current("timeline");
   if (!timelineDraft || (!timelineDraft.clips.length && project.scenes.length)) {
@@ -1458,6 +1507,7 @@ function timelineView() {
   previewLanguage.addEventListener("input", event => event.stopPropagation());
 
   function clipEditor(clip) {
+    const sceneTitle = sceneData(clip.scene)?.data.title || tr("Scene", "Cena");
     const options = project.versions.filter(item => item.slot === "video/" + clip.scene && usable(item)).map(item => [item.id, "v" + item.seq]);
     const video = select([["", tr("Current take", "Tomada atual")], ...options], clip.video || "");
     if (clip.video && !options.some(([id]) => id === clip.video)) {
@@ -1485,7 +1535,7 @@ function timelineView() {
       refreshDraftInfo();
       fields(true);
     };
-    return stack(node("h2", {}, sceneData(clip.scene)?.data.title || tr("Scene", "Cena")),
+    return stack(node("h2", {}, sceneTitle),
       label(tr("Take", "Tomada"), video),
       node("div", {class: "clip-timing"},
         numeric("trim", "Trim start (s)", "Corte inicial (s)"),
@@ -1493,6 +1543,7 @@ function timelineView() {
       row(button(tr("Move earlier", "Mover antes"), () => swap(-1), false, selectedClip === 0),
         button(tr("Move later", "Mover depois"), () => swap(1), false, selectedClip >= draft.clips.length - 1)),
       captionEditor(clip),
+      sceneEvidence(clip.scene, sceneTitle),
       node("details", {}, node("summary", {}, tr("Scene audio and transition", "Áudio e transição da cena")),
         stack(numeric("narration_offset", "Narration offset (s)", "Atraso da narração (s)"),
           label(tr("Transition", "Transição"), transition), label(tr("Sound effect", "Efeito sonoro"), effect))));

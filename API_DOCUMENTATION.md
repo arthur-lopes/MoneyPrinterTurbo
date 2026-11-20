@@ -40,6 +40,7 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | GET /api/projects/{project}/timeline | Read the current saved timeline, or pass `?revision=<id>` for an earlier revision. |
 | PUT /api/projects/{project}/timeline | Save an editing draft, including clips, languages and output options. Returns the saved revision and its `ETag`. |
 | POST /api/projects/{project}/timeline/cut-preview | Compile the submitted `timeline` for one of its `language` tracks. Returns ordered scene timings, caption cues and project-scoped media URLs for interactive playback. |
+| GET /api/projects/{project}/scenes/{scene}/evidence | Read the editorial categories and cited sources for the scene's recorded research revision. |
 | GET /api/projects/{project}/delivery | Review the current saved cut, its scene timings, exact material versions and output settings. |
 | POST /api/projects/{project}/delivery/materials | Approve the materials of selected `scenes` with the saved `revision`, matching `versions` and `confirmed: true`. |
 | POST /api/projects/{project}/delivery/prepare | After material approval, save the unwatermarked cut with the same `revision`, all its material `versions` and `confirmed: true`. |
@@ -104,6 +105,7 @@ The owner creates an expiring credential in **Project settings → Agent access*
 | Method and path | Behavior |
 | --- | --- |
 | GET /api/agent/v1/projects/{project} | Read sources, script, saved timeline, scene IDs, eligible takes and the latest preview. |
+| GET /api/agent/v1/projects/{project}/scenes/{scene}/evidence | Read scene evidence with the project credential. The project context lists this URL for each scene. |
 | GET, HEAD /api/agent/v1/projects/{project}/media/{version} | Read project media with the same project credential. |
 | GET /api/agent/v1/projects/{project}/assemblies/{version}/notes | Read timestamped review notes for an assembly in the granted project, including the rendered scene and its relative timestamp when available. |
 | POST /api/agent/v1/projects/{project}/proposals/validate | Compile the candidate against the current timeline and media approvals. Returns a diff and an input fingerprint. |
@@ -114,9 +116,12 @@ In the proposal, set `base_revision` to the ID returned by context and provide a
 
 Each agent note returns a `scene` object with `id`, `title`, `start_ms`, `end_ms`, and `offset_ms`. It is null when the rendered scene cannot be identified. For a proposal that addresses a note, pass its ID in the optional `review_note` field. The note must belong to an assembly of the proposal's base revision with current inputs, and the proposal must edit the scene referenced by the note. The owner and the proposal receipt can open the original timestamp through `plan.review_note.url`.
 
+Scene evidence includes `scene_version`, `script_version`, `research_version`, `fresh`, and each section's `category` and numbered sources. A `recorded` binding is stored with the scene. A `historical` binding uses matching script sections at the time an older scene was created. An `unavailable` binding returns no source links. The response follows the cited research revision even after a later research revision changes.
+
 ```powershell
 # Set MPT_AGENT_TOKEN in the process environment from the issued credential.
 python -m app.production.agent_cli --project-url $projectApi context
+python -m app.production.agent_cli --project-url $projectApi evidence $sceneId
 python -m app.production.agent_cli --project-url $projectApi notes $assemblyId
 python -m app.production.agent_cli --project-url $projectApi validate edit.json
 python -m app.production.agent_cli --project-url $projectApi submit edit.json

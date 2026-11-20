@@ -634,6 +634,12 @@ def create_app(
     def storyboard(pid: m.Id, actor=Depends(authenticated)):
         return {"scenes": store.storyboard(actor, pid)}
 
+    @app.get("/api/projects/{pid}/scenes/{sid}/evidence")
+    def scene_evidence(pid: m.Id, sid: m.Id, actor=Depends(authenticated)):
+        with store.transaction(write=False) as db:
+            store.project(db, actor, pid)
+            return store.scene_evidence(db, pid, sid)
+
     @app.put("/api/projects/{pid}/scenes/{sid}")
     def scene(pid: m.Id, sid: m.Id, body: m.Scene, actor=Depends(authenticated)):
         return store.edit_scene(actor, pid, sid, body)
@@ -819,6 +825,10 @@ def create_app(
     @app.get("/api/agent/v1/projects/{pid}")
     def agent_context(pid: m.Id, digest=Depends(agent_credential)):
         return project_agents.context(pid, digest)
+
+    @app.get("/api/agent/v1/projects/{pid}/scenes/{sid}/evidence")
+    def agent_scene_evidence(pid: m.Id, sid: m.Id, digest=Depends(agent_credential)):
+        return project_agents.evidence(pid, digest, sid)
 
     @app.get("/api/agent/v1/projects/{pid}/assemblies/{version}/notes")
     def list_agent_review_notes(

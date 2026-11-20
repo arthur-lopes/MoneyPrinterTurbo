@@ -176,6 +176,7 @@ class AgentProjects:
                         "id": sid,
                         "version": storyboard["id"],
                         "data": storyboard["data"],
+                        "evidence_url": f"/api/agent/v1/projects/{pid}/scenes/{sid}/evidence",
                         "current_take": head["id"]
                         if head and takes and takes[0]["id"] == head["id"]
                         else None,
@@ -200,6 +201,11 @@ class AgentProjects:
                 },
                 "scenes": scenes,
             }
+
+    def evidence(self, pid, digest, sid):
+        with self.store.transaction(write=False) as db:
+            self._grant(db, pid, digest)
+            return self.store.scene_evidence(db, pid, sid)
 
     def media(self, pid, digest, version):
         with self.store.transaction(write=False) as db:

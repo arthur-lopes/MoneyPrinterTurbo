@@ -33,6 +33,9 @@ def main(argv=None):
     parser.add_argument("--project-url", required=True, type=project_url)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("context", help="Read the project and current cut")
+    commands.add_parser(
+        "evidence", help="Read the research bound to a scene"
+    ).add_argument("scene")
     commands.add_parser("notes", help="Read review notes on an assembly").add_argument(
         "assembly"
     )
@@ -54,6 +57,12 @@ def main(argv=None):
         ) as client:
             if args.command == "context":
                 response = client.get(args.project_url)
+            elif args.command == "evidence":
+                if not re.fullmatch(r"[a-f0-9]{32}", args.scene):
+                    parser.error("Use a scene ID returned by context")
+                response = client.get(
+                    f"{args.project_url}/scenes/{args.scene}/evidence"
+                )
             elif args.command == "notes":
                 if not re.fullmatch(r"[a-f0-9]{32}", args.assembly):
                     parser.error("Use the assembly ID returned by context")

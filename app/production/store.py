@@ -1,6 +1,7 @@
 """Project, revision, approval and queue persistence for one local workstation."""
 
 from contextlib import contextmanager
+from hashlib import sha256
 import json
 from pathlib import Path
 import sqlite3
@@ -222,6 +223,8 @@ class Store:
             return visited[asset["id"]]
         pid = asset["project"]
         result = self._dependencies_current(db, pid, asset["dependencies"], visited)
+        if result and asset["kind"] == "scene":
+            result = self._legacy_scene_sources_current(db, pid, asset)
         visited[asset["id"]] = result
         return result
 
@@ -263,6 +266,13 @@ class Store:
                 if any(
                     current.get(section["key"]) != section
                     for section in dep["sections"]
+                ):
+                    return False
+                if (
+                    dep.get("sources_digest")
+                    and script["id"] != dep.get("script_version")
+                    and self._sources_digest(db, pid, script, dep["sections"])
+                    != dep["sources_digest"]
                 ):
                     return False
                 continue
@@ -397,6 +407,97 @@ class Store:
             db, pid, "script", "script", section_data, [{"id": research["id"]}], job=job
         )
 
+    def _script_research(self, db, pid, script):
+        if script and script["kind"] == "script":
+            for dep in script["dependencies"]:
+                if dep.get("id"):
+                    asset = self.asset(db, pid, dep["id"], missing=True)
+                    if asset and asset["kind"] == "research":
+                        return asset
+        return None
+
+    @staticmethod
+    def _sources_for(research, sections):
+        catalog = research["data"]["sources"] if research else []
+        return {
+            index: catalog[index - 1]
+            for index in sorted(
+                {index for row in sections for index in row.get("sources", [])}
+            )
+            if 1 <= index <= len(catalog)
+        }
+
+    def _sources_digest(self, db, pid, script, sections):
+        research = self._script_research(db, pid, script)
+        sources = self._sources_for(research, sections)
+        return sha256(encode(sources).encode("utf-8")).hexdigest() if sources else None
+
+    def _scene_script(self, db, pid, scene, binding):
+        if script_id := binding.get("script_version"):
+            return self.asset(db, pid, script_id, missing=True)
+        sections = binding.get("sections", [])
+        if sections:
+            # Older scenes recorded section snapshots without their script ID.
+            for row in db.execute(
+                """SELECT id FROM versions WHERE project=? AND slot='script'
+                   AND created<=? ORDER BY seq DESC""",
+                (pid, scene["created"]),
+            ):
+                version = self.asset(db, pid, row["id"])
+                by_key = {item["key"]: item for item in version["data"]["sections"]}
+                if all(by_key.get(item["key"]) == item for item in sections):
+                    return version
+        return None
+
+    def _legacy_scene_sources_current(self, db, pid, scene):
+        binding = next((dep for dep in scene["dependencies"] if "sections" in dep), {})
+        sections = binding.get("sections", [])
+        if binding.get("script_version") or not any(
+            item.get("sources") for item in sections
+        ):
+            return True
+        current = self.head(db, pid, "script")
+        if not current or current["created"] <= scene["created"]:
+            return True
+        original = self._scene_script(db, pid, scene, binding)
+        digest = self._sources_digest(db, pid, original, sections)
+        return not digest or self._sources_digest(db, pid, current, sections) == digest
+
+    def scene_evidence(self, db, pid, sid):
+        if sid not in self.order(db, pid):
+            raise RuleError("Scene not found", 404)
+        scene = self.head(db, pid, f"scene/{sid}")
+        if not scene:
+            raise RuleError("Scene not found", 404)
+        binding = next((dep for dep in scene["dependencies"] if "sections" in dep), {})
+        sections = binding.get("sections", [])
+        script = self._scene_script(db, pid, scene, binding)
+        research = self._script_research(db, pid, script)
+        sources = self._sources_for(research, sections)
+        return {
+            "scene": sid,
+            "scene_version": scene["id"],
+            "script_version": script["id"] if script else None,
+            "research_version": research["id"] if research else None,
+            "binding": ("recorded" if binding.get("script_version") else "historical")
+            if research
+            else "unavailable",
+            "fresh": self.fresh(db, scene),
+            "sections": [
+                {
+                    "key": item["key"],
+                    "title": item["title"],
+                    "category": item["category"],
+                    "sources": [
+                        {"number": index, **sources[index]}
+                        for index in dict.fromkeys(item.get("sources", []))
+                        if index in sources
+                    ],
+                }
+                for item in sections
+            ],
+        }
+
     def order(self, db, pid):
         return [
             row["id"]
@@ -480,8 +581,14 @@ class Store:
         ):
             raise RuleError("Scene sections must be unique approved script sections")
         row = db.execute("SELECT data FROM projects WHERE id=?", (pid,)).fetchone()
+        sections = [current[key] for key in data.sections]
+        source_digest = self._sources_digest(db, pid, script, sections)
         deps = [
-            {"sections": [current[key] for key in data.sections]},
+            {
+                "sections": sections,
+                "script_version": script["id"],
+                **({"sources_digest": source_digest} if source_digest else {}),
+            },
             {"style": unpack(row, "data")["data"]["style"]},
         ]
         for ref in data.references:

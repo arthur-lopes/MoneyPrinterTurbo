@@ -85,6 +85,159 @@ def paid(
     store.budget(actor, pid, m.Budget(scope="project", limit=budget, confirmed=True))
 
 
+def test_scene_evidence_preserves_original_research_and_detects_citation_changes(
+    sandbox,
+):
+    store, actor, pid = sandbox
+    sources = [
+        {
+            "title": "Study A",
+            "url": "https://example.test/a",
+            "excerpt": "Initial finding.",
+        },
+        {
+            "title": "Study B",
+            "url": "https://example.test/b",
+            "excerpt": "Independent finding.",
+        },
+    ]
+    sections = [
+        m.Section(
+            key=f"section{i}",
+            title=f"Section {i}",
+            narration="A measured observation.",
+            seconds=3,
+            category="verified",
+            sources=[i],
+        ).model_dump(exclude_none=True)
+        for i in (1, 2)
+    ]
+
+    def approve_versions(catalog):
+        with store.transaction() as db:
+            research = store.add(
+                db, pid, "research", "research", {"sources": catalog, "claims": []}
+            )
+        review(store, actor, pid, research)
+        with store.transaction() as db:
+            script = store.script(db, pid, {"sections": sections}, research)
+        review(store, actor, pid, script)
+        return research, script
+
+    original_research, original_script = approve_versions(sources)
+    first, second = store.storyboard(actor, pid)
+    original = review(store, actor, pid, head(store, pid, f"scene/{first}"))
+    review(store, actor, pid, head(store, pid, f"scene/{second}"))
+    legacy = uuid4().hex
+    with store.transaction() as db:
+        db.execute(
+            "INSERT INTO scenes(id,project,position) VALUES(?,?,2)", (legacy, pid)
+        )
+        store.add(
+            db,
+            pid,
+            f"scene/{legacy}",
+            "scene",
+            original["data"],
+            [
+                {"sections": original["dependencies"][0]["sections"]},
+                original["dependencies"][1],
+            ],
+        )
+    app = create_app(
+        store.directory, {"a" * 32: actor, "b" * 32: "other"}, worker_enabled=False
+    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+    owner = {"Authorization": "Bearer " + "a" * 32}
+    other = {"Authorization": "Bearer " + "b" * 32}
+    project_url = f"/api/projects/{pid}"
+    agent_url = f"/api/agent/v1/projects/{pid}"
+    suffix = f"/scenes/{first}/evidence"
+    legacy_url = project_url + f"/scenes/{legacy}/evidence"
+    grant = (
+        client.post(
+            project_url + "/agent-access",
+            headers=owner,
+            json={"label": "Evidence reader", "scope": "read"},
+        )
+        .raise_for_status()
+        .json()
+    )
+    agent = {"Authorization": "Bearer " + grant["token"]}
+    current = client.get(project_url + suffix, headers=owner).raise_for_status().json()
+    assert current == {
+        "scene": first,
+        "scene_version": original["id"],
+        "script_version": original_script["id"],
+        "research_version": original_research["id"],
+        "binding": "recorded",
+        "fresh": True,
+        "sections": [
+            {
+                "key": "section1",
+                "title": "Section 1",
+                "category": "verified",
+                "sources": [{"number": 1, **sources[0]}],
+            }
+        ],
+    }
+    assert (
+        client.get(agent_url + suffix, headers=agent).raise_for_status().json()
+        == current
+    )
+    assert client.get(project_url + suffix, headers=agent).status_code == 401
+    assert client.get(project_url + suffix, headers=other).status_code == 404
+    assert client.get(project_url + suffix).status_code == 401
+    foreign = store.create(actor, store.snapshot(actor, pid)["data"])
+    assert (
+        client.get(
+            f"/api/agent/v1/projects/{foreign}" + suffix, headers=agent
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            agent_url + f"/scenes/{uuid4().hex}/evidence", headers=agent
+        ).status_code
+        == 404
+    )
+
+    extra = {
+        "title": "Uncited",
+        "url": "https://example.test/c",
+        "excerpt": "Unrelated research.",
+    }
+    approve_versions([*sources, extra])
+    assert client.get(project_url + suffix, headers=owner).json() == current
+    historic = client.get(legacy_url, headers=owner).raise_for_status().json()
+    assert historic["binding"] == "historical" and historic["fresh"]
+    assert historic["research_version"] == original_research["id"]
+    revised = dict(sources[0], excerpt="Correction from the source.")
+    latest_research, latest_script = approve_versions([revised, sources[1], extra])
+    assert client.get(project_url + suffix, headers=owner).json() == dict(
+        current, fresh=False
+    )
+    assert client.get(legacy_url, headers=owner).json() == dict(historic, fresh=False)
+    assert client.get(project_url + f"/scenes/{second}/evidence", headers=owner).json()[
+        "fresh"
+    ]
+    assert store.storyboard(actor, pid) == [first, second, legacy]
+    replacement = (
+        client.get(project_url + suffix, headers=owner).raise_for_status().json()
+    )
+    assert replacement["scene_version"] != original["id"] and replacement["fresh"]
+    assert replacement["script_version"] == latest_script["id"]
+    assert replacement["research_version"] == latest_research["id"]
+    assert replacement["sections"][0]["sources"] == [{"number": 1, **revised}]
+    assert (
+        client.delete(
+            project_url + "/agent-access/" + grant["id"], headers=owner
+        ).status_code
+        == 200
+    )
+    assert client.get(agent_url + suffix, headers=agent).status_code == 401
+
+
 def test_approval_order_and_immutable_versions(sandbox):
     store, actor, pid = sandbox
     with pytest.raises(RuleError, match="research approval"):
