@@ -1476,8 +1476,28 @@ function timelineView() {
   const rough = roughCutAction({inEditor: true});
   const usable = item => ready(item) || (draft.watermark && item?.draft_preview &&
     item.fresh && item.status === "AWAITING_REVIEW");
-  const sequence = node("div", {class: "timeline", role: "group",
-    "aria-label": tr("Scene sequence", "Sequência de cenas")});
+  const sceneToolbar = draft.clips.length >= 3;
+  const sequence = node("div", {class: "timeline", role: sceneToolbar ? "toolbar" : "group",
+    "aria-label": tr("Scene sequence", "Sequência de cenas"),
+    "aria-describedby": sceneToolbar ? "timeline-scene-keys" : null});
+  if (sceneToolbar) {
+    sequence.addEventListener("focusin", event => {
+      if (event.target.parentElement !== sequence) return;
+      for (const control of sequence.children) control.tabIndex = control === event.target ? 0 : -1;
+    });
+    sequence.addEventListener("keydown", event => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) return;
+      const controls = Array.from(sequence.children);
+      const currentIndex = controls.indexOf(event.target);
+      if (currentIndex < 0) return;
+      const last = controls.length - 1;
+      const destination = {ArrowLeft: Math.max(0, currentIndex - 1), ArrowRight: Math.min(last, currentIndex + 1),
+        Home: 0, End: last};
+      if (!Object.hasOwn(destination, event.key)) return;
+      event.preventDefault();
+      controls[destination[event.key]].focus();
+    });
+  }
   const inspector = node("div", {class: "editor-inspector stack"});
   const audioAssets = project.versions.filter(v => v.kind === "audio" && ready(v)).map(v => [v.id, v.data.title]);
   const assembly = current("assembly"), exported = current("export");
@@ -1492,6 +1512,7 @@ function timelineView() {
     return slot?.startsWith("video/") ? [{...entry, sceneId: slot.slice(6)}] : [];
   });
   const remembered = editorPreview?.project === projectId ? editorPreview : {};
+  let resumePosition = remembered.position;
   const interfaceLanguage = locale === "pt" ? "pt-BR" : "en-US";
   const cutLanguage = draft.clips.length && draft.clips.every(clip =>
     usable(sceneData(clip.scene)) && usable(footage(clip))) ?
@@ -1659,7 +1680,10 @@ function timelineView() {
         const plan = await api(endpoint, "POST", JSON.parse(key)[1]);
         if (stillSelected()) {
           openingCut = false;
-          scenePlayer.apply(plan, draft.clips[selectedClip]?.scene, view === "cut" ? reviewOffset ?? 0 : 0);
+          const scene = draft.clips[selectedClip]?.scene;
+          const resumed = resumePosition?.scene === scene && resumePosition?.view === view ? resumePosition.offset : 0;
+          scenePlayer.apply(plan, scene, (view === "cut" ? reviewOffset : null) ?? resumed);
+          resumePosition = null;
           if (view === "cut" && reviewOffset !== null) {
             reviewContext.opened = true;
             reviewOffset = null;
@@ -1746,7 +1770,8 @@ function timelineView() {
   function captionEditor(clip) {
     const languages = project.data.languages;
     const language = select(languages.map(lang => [lang, lang]), previewLanguage.value);
-    const text = area("", {rows: 4, maxlength: 8000});
+    language.id = "timeline-field-caption-language";
+    const text = area("", {id: "timeline-field-caption", rows: 4, maxlength: 8000});
     const hint = small("");
     const narration = () => current("voice/" + clip.scene + "/" + language.value)?.data.narration || "";
     const showText = () => {
@@ -1783,8 +1808,11 @@ function timelineView() {
       reviewOffset = null;
     }
     selectedClip = index;
-    [...sequence.children].forEach((control, i) =>
-      control.setAttribute("aria-pressed", String(i === index)));
+    const focused = sequence.contains(document.activeElement) ? document.activeElement : null;
+    Array.from(sequence.children).forEach((control, i) => {
+      control.setAttribute("aria-pressed", String(i === index));
+      if (sceneToolbar) control.tabIndex = (focused ? control === focused : i === index) ? 0 : -1;
+    });
     const clip = draft.clips[index];
     inspector.replaceChildren(clip ? clipEditor(clip) : node("p", {},
       tr("Plan the scenes before assembling your video.", "Planeje as cenas antes de montar o vídeo.")));
@@ -1822,6 +1850,7 @@ function timelineView() {
     const sceneTitle = sceneData(clip.scene)?.data.title || tr("Scene", "Cena");
     const options = project.versions.filter(item => item.slot === "video/" + clip.scene && usable(item)).map(item => [item.id, "v" + item.seq]);
     const video = select([["", tr("Current take", "Tomada atual")], ...options], clip.video || "");
+    video.id = "timeline-field-take";
     if (clip.video && !options.some(([id]) => id === clip.video)) {
       video.append(node("option", {value: clip.video}, tr("Previous take · needs review", "Tomada anterior · requer revisão")));
       video.value = clip.video;
@@ -1831,14 +1860,16 @@ function timelineView() {
       useScenePreview();
     });
     const numeric = (key, en, pt, optional = false) => label(tr(en, pt), input(clip[key] ?? "", {
-      type: "number", min: 0, step: ".05", oninput: e => {
+      id: "timeline-field-" + key, type: "number", min: 0, step: ".05", oninput: e => {
         clip[key] = optional && !e.target.value ? null : Number(e.target.value);
         useScenePreview();
       },
     }));
     const transition = select([["cut", tr("Cut", "Corte")], ["fade", tr("Fade to black", "Fade para preto")]], clip.transition);
+    transition.id = "timeline-field-transition";
     transition.addEventListener("change", () => { clip.transition = transition.value; });
     const effect = select([["", tr("None", "Nenhum")], ...audioAssets], clip.effect || "");
+    effect.id = "timeline-field-effect";
     effect.addEventListener("change", () => { clip.effect = effect.value || null; });
     const swap = offset => {
       const a = selectedClip, b = a + offset;
@@ -2021,7 +2052,7 @@ function timelineView() {
       conflictRows), [confirm]);
   }
 
-  async function saveTimeline() {
+  async function saveTimeline(restoreEditingFocus = false) {
     const target = projectId;
     const draftData = json(draft);
     const headers = timelineBase ? {"If-Match": '"' + timelineBase + '"'} : {"If-None-Match": "*"};
@@ -2029,7 +2060,8 @@ function timelineView() {
     try {
       result = await api(path("/timeline"), "PUT", JSON.parse(draftData), headers);
     } catch (error) {
-      if (error.status !== 412 || projectId !== target) throw error;
+      if (error.status !== 412) throw error;
+      if (projectId !== target || !inspector.isConnected) return null;
       modal(tr("Timeline changed", "A linha do tempo mudou"),
         node("p", {}, timelineStored ?
           tr("Another revision was saved. You can load it and return to your draft from this browser's drafts.",
@@ -2042,6 +2074,8 @@ function timelineView() {
       return null;
     }
     if (projectId !== target || timelineDraft !== draft) return null;
+    await refresh(false);
+    if (projectId !== target || timelineDraft !== draft) return null;
     saved = result;
     timelineBase = result.id;
     const unchanged = json(draft) === draftData;
@@ -2051,9 +2085,36 @@ function timelineView() {
       timelineStored = false;
       timelineDraft = structuredClone(result.data);
     } else keepDraft();
-    await refresh(unchanged);
-    if (!unchanged) refreshDraftInfo();
-    return projectId === target && unchanged ? result : null;
+    if (page !== "timeline") return null;
+    if (!unchanged) {
+      if (inspector.isConnected) refreshTimelineState();
+      return null;
+    }
+    const stillOpen = inspector.isConnected;
+    const active = document.activeElement;
+    const fieldId = restoreEditingFocus && inspector.contains(active) && active.id.startsWith("timeline-field-") ?
+      active.id : null;
+    const selection = fieldId && active instanceof HTMLTextAreaElement ?
+      [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+    const captionLanguage = fieldId?.startsWith("timeline-field-caption") && ui("timeline-field-caption-language").value;
+    if (restoreEditingFocus && stillOpen && interactive()) {
+      const position = scenePlayer.position();
+      if (position) editorPreview = {...editorPreview, position: {...position, view: mode.value}};
+    }
+    render();
+    if (restoreEditingFocus && stillOpen) {
+      const field = fieldId && ui(fieldId);
+      const details = field && field.closest("details");
+      if (details) details.open = true;
+      const language = captionLanguage && ui("timeline-field-caption-language");
+      if (language && language.value !== captionLanguage) {
+        language.value = captionLanguage;
+        language.dispatchEvent(new Event("change"));
+      }
+      if (selection && field instanceof HTMLTextAreaElement) field.setSelectionRange(...selection);
+      (field || ui("timeline-save"))?.focus({preventScroll: true});
+    }
+    return stillOpen ? result : null;
   }
   const renderButton = button(tr("Render preview", "Renderizar prévia"), async () => {
     const revision = await saveTimeline();
@@ -2070,12 +2131,19 @@ function timelineView() {
     if (json(saved.data) !== json(draft) && !await saveTimeline()) return;
     if (page === "timeline") navigate("delivery");
   });
-  const controls = row(
-    button(tr("Save timeline", "Salvar linha do tempo"), async () => {
-      if (await saveTimeline()) notify(tr("Timeline saved", "Linha do tempo salva"));
-    }, false, !draft.clips.length),
+  const saveButton = button(tr("Save timeline", "Salvar linha do tempo"), async () => {
+    if (await saveTimeline(true)) notify(tr("Timeline saved", "Linha do tempo salva"));
+  }, false, !draft.clips.length);
+  saveButton.id = "timeline-save";
+  saveButton.setAttribute("aria-keyshortcuts", "Control+S Meta+S");
+  const shortcuts = draft.clips.length && node("details", {}, node("summary", {}, tr("Keyboard shortcuts", "Atalhos do editor")),
+    stack(sceneToolbar && node("small", {id: "timeline-scene-keys"}, tr(
+      "In the scene sequence, use arrows, Home or End to move. Press Enter to open a scene.",
+      "Na sequência de cenas, use as setas, Home ou End para navegar. Pressione Enter para abrir uma cena.")),
+    small(tr("Ctrl+S or ⌘+S saves the timeline.", "Ctrl+S ou ⌘+S salva a linha do tempo."))));
+  const controls = row(saveButton,
     missingButton, renderButton, reviewDelivery,
-    activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
+    activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"), shortcuts);
   const reviewReference = reviewContext && stack(
     node("details", {}, node("summary", {}, tr("Review note at ", "Comentário em ") + timecode(reviewContext.note.position_ms)),
       node("p", {class: "review-note-text"}, reviewContext.note.body)),
@@ -2130,6 +2198,12 @@ function timelineView() {
     }
   };
   refreshTimelineState();
+  if (!rough && draft.clips.length) result.addEventListener("keydown", event => {
+    if (event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) ||
+        event.key.toLowerCase() !== "s" || ui("dialog").open) return;
+    event.preventDefault();
+    if (!event.repeat && !saveButton.disabled) saveButton.click();
+  });
   const edited = () => {
     keepDraft();
     refreshTimelineState();
