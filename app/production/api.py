@@ -373,7 +373,9 @@ def create_app(
         )
 
     @app.get("/ui/{name}", include_in_schema=False)
-    def static(name: Literal["workspace.js", "workspace.css", "scene-preview.js"]):
+    def static(
+        name: Literal["workspace.js", "workspace.css", "scene-preview.js", "timeline-drafts.js"],
+    ):
         return FileResponse(WEB / name)
 
     @app.get("/api/session")

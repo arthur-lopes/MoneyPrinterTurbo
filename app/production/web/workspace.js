@@ -8,6 +8,7 @@ let projects = [], project = null, loggedIn = false, page = entry.get("view") ||
 let loginMethod = "token";
 let providerCurrency = null;
 let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null, timelineBase = null;
+let timelineRecovery, timelineInitial, timelineStored;
 let editing = false, polling = false;
 let activeScenePreview, editorPreview, reviewEdit, reviewReturnFocus;
 let experimentVersion = null;
@@ -173,6 +174,7 @@ async function changeProject(id) {
   sessionStorage.setItem("mpt-production-project", id);
   selected = new Set();
   timelineDraft = null;
+  timelineRecovery = null;
   reviewEdit = null;
   reviewReturnFocus = null;
   experimentVersion = null;
@@ -1447,15 +1449,22 @@ function sceneEvidence(scene, sceneTitle) {
 
 function timelineView() {
   let saved = current("timeline");
+  const recovery = timelineRecovery ??= browserTimelineDrafts(projectId);
   if (!timelineDraft || (!timelineDraft.clips.length && project.scenes.length)) {
-    timelineBase = saved?.id || null;
     const defaultClips = project.scenes.map(scene => ({scene, trim: 0, narration_offset: 0, transition: "cut"}));
     const existing = saved?.data;
-    timelineDraft = existing && defaultClips.length === existing.clips.length &&
+    const initial = existing && defaultClips.length === existing.clips.length &&
       existing.clips.every(clip => project.scenes.includes(clip.scene)) ? structuredClone(existing) : {
       clips: defaultClips, languages: [...project.data.languages], aspect: project.data.style.aspect,
       resolution: 1080, subtitles: true, watermark: false, music: null, music_volume: .15, metadata: {},
     };
+    const checkpoint = recovery.current();
+    timelineBase = checkpoint ? checkpoint.base : saved?.id || null;
+    timelineDraft = checkpoint ? structuredClone(checkpoint.draft) : initial;
+    timelineInitial = json(checkpoint?.base ?
+      project.versions.find(version => version.id === checkpoint.base)?.data ?? initial : initial);
+    timelineStored = Boolean(checkpoint);
+    if (checkpoint?.scene) selectedClip = Math.max(0, timelineDraft.clips.findIndex(clip => clip.scene === checkpoint.scene));
   }
   const draft = timelineDraft;
   const reviewContext = reviewEdit?.project === projectId ? reviewEdit : null;
@@ -1537,11 +1546,61 @@ function timelineView() {
   }
 
   function refreshDraftInfo() {
-    draftInfo.textContent = (saved?.id || null) !== timelineBase ?
-      tr("The saved timeline changed in another session.", "A linha do tempo salva mudou em outra sessão.") :
-      saved && json(saved.data) === json(draft) ?
-      tr("Timeline saved · v", "Linha do tempo salva · v") + saved.seq :
-      tr("Timeline draft · save to resume later", "Rascunho da linha do tempo · salve para retomar depois");
+    let message;
+    if ((saved?.id || null) !== timelineBase) {
+      message = timelineStored ?
+        tr("Draft kept in this browser · the saved cut has changed", "Rascunho neste navegador · o corte salvo mudou") :
+        tr("The saved timeline changed in another session.", "A linha do tempo salva mudou em outra sessão.");
+    } else if (saved && json(saved.data) === json(draft)) {
+      message = tr("Timeline saved · v", "Linha do tempo salva · v") + saved.seq;
+    } else if (timelineStored) {
+      message = tr("Draft kept in this browser", "Rascunho guardado neste navegador");
+    } else if (json(draft) !== timelineInitial) {
+      message = tr("Edits are only in this tab. Save the timeline to keep them.",
+        "Os ajustes estão só nesta aba. Salve a linha do tempo para guardá-los.");
+    } else {
+      message = tr("Unsaved timeline", "Linha do tempo ainda não salva");
+    }
+    if (draftInfo.textContent !== message) draftInfo.textContent = message;
+  }
+
+  function keepDraft() {
+    if (json(draft) === timelineInitial) {
+      if (timelineStored) recovery.reset();
+      timelineStored = false;
+    } else {
+      timelineStored = recovery.write(timelineBase, draft, draft.clips[selectedClip]?.scene);
+    }
+  }
+
+  function openBrowserDrafts() {
+    const date = new Intl.DateTimeFormat(locale === "pt" ? "pt-BR" : "en-US", {dateStyle: "short", timeStyle: "medium"});
+    const items = recovery.others();
+    modal(tr("Drafts in this browser", "Rascunhos neste navegador"),
+      items.length ? stack(items.map(item => {
+        const when = date.format(item.data.updated);
+        const matches = item.data.base === (current("timeline")?.id || null);
+        const restore = button(tr("Resume draft · ", "Retomar rascunho · ") + when, () => {
+          recovery.select(item);
+          timelineDraft = null;
+          ui("dialog").close();
+          render();
+          ui("workspace").focus();
+        });
+        const removeDraft = button(tr("Delete draft", "Excluir rascunho"), () => {
+          modal(tr("Delete this browser draft?", "Excluir este rascunho do navegador?"),
+            node("p", {}, tr("The saved cut will still be available.", "O corte salvo continuará disponível.")),
+            [button(tr("Delete draft", "Excluir rascunho"), () => {
+              recovery.remove(item);
+              refreshTimelineState();
+              openBrowserDrafts();
+            }, true)]);
+        });
+        const baseLabel = matches ? tr("Current saved cut", "Corte salvo atual") :
+          tr("Earlier saved cut", "Corte salvo anterior");
+        return stack(small([sceneData(item.data.scene)?.data.title, baseLabel].filter(Boolean).join(" · ")),
+          row(restore, removeDraft));
+      })) : node("p", {}, tr("There are no other drafts.", "Nenhum outro rascunho neste navegador.")));
   }
 
   function seek(player, time) {
@@ -1784,6 +1843,7 @@ function timelineView() {
       const a = selectedClip, b = a + offset;
       [draft.clips[a], draft.clips[b]] = [draft.clips[b], draft.clips[a]];
       selectedClip = b;
+      keepDraft();
       refreshDraftInfo();
       fields(true);
     };
@@ -1859,6 +1919,17 @@ function timelineView() {
     output: ["Choose output languages", "Escolher idiomas da saída"],
   };
   const outputDetails = node("details", {}, node("summary", {}, tr("Output settings", "Configurações de saída")), output);
+  async function loadSavedTimeline() {
+    const target = projectId;
+    await refresh(false);
+    if (projectId !== target || timelineDraft !== draft) return;
+    recovery.reset();
+    timelineDraft = null;
+    ui("dialog").close();
+    render();
+    ui("workspace").focus();
+  }
+
   async function saveTimeline() {
     const target = projectId;
     const draftData = json(draft);
@@ -1869,13 +1940,12 @@ function timelineView() {
     } catch (error) {
       if (error.status !== 412 || projectId !== target) throw error;
       modal(tr("Timeline changed", "A linha do tempo mudou"),
-        node("p", {}, tr("Someone saved another revision. Load the latest timeline to continue, or close to keep reviewing your edits.",
-          "Outra revisão foi salva. Carregue a linha do tempo mais recente para continuar ou feche para conferir seus ajustes.")), [
-          button(tr("Load saved timeline", "Carregar versão salva"), async () => {
-            timelineDraft = null;
-            await refresh();
-            ui("dialog").close();
-          }),
+        node("p", {}, timelineStored ?
+          tr("Another revision was saved. You can load it and return to your draft from this browser's drafts.",
+            "Outra revisão foi salva. Você pode carregá-la e voltar aos seus ajustes pelos rascunhos deste navegador.") :
+          tr("Another revision was saved. Load it to discard the edits in this tab.",
+            "Outra revisão foi salva. Carregue-a para descartar os ajustes desta aba.")), [
+          button(tr("Load saved timeline", "Carregar versão salva"), loadSavedTimeline),
         ]);
       return null;
     }
@@ -1883,7 +1953,12 @@ function timelineView() {
     saved = result;
     timelineBase = result.id;
     const unchanged = json(draft) === draftData;
-    if (unchanged) timelineDraft = structuredClone(result.data);
+    timelineInitial = json(result.data);
+    if (unchanged) {
+      recovery.reset(true);
+      timelineStored = false;
+      timelineDraft = structuredClone(result.data);
+    } else keepDraft();
     await refresh(unchanged);
     if (!unchanged) refreshDraftInfo();
     return projectId === target && unchanged ? result : null;
@@ -1922,7 +1997,11 @@ function timelineView() {
     node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo, previewRecovery,
       reviewReference),
     sequence, inspector));
-  const result = stack(title(project.data.title), rough || content, !rough && row(draftInfo), !rough && controls,
+  const loadSaved = button(tr("Open saved cut", "Abrir corte salvo"), loadSavedTimeline);
+  const browserDrafts = button(tr("Browser drafts", "Rascunhos neste navegador"), openBrowserDrafts);
+  const result = stack(title(project.data.title), row((!rough || timelineStored) && draftInfo, loadSaved, browserDrafts),
+    rough || content,
+  !rough && controls,
     assembly && card(node("h2", {}, tr("Review rendered version", "Revisar versão renderizada")), reviewControls(assembly),
       row(node("a", {href: assembly.url + "?attachment=true"}, tr("Download assembly", "Baixar montagem")),
         !exported?.fresh && !assembly.data.watermark && button(tr("Prepare approved export", "Preparar exportação aprovada"),
@@ -1936,6 +2015,9 @@ function timelineView() {
     node("details", {}, node("summary", {}, tr("Audience retention", "Retenção de público")), retentionPanel(assembly)), jobHistory());
   const refreshTimelineState = () => {
     refreshDraftInfo();
+    loadSaved.hidden = !timelineStored || !saved || (saved.id === timelineBase && json(saved.data) === json(draft));
+    browserDrafts.hidden = !recovery.hasOthers();
+    browserDrafts.disabled = !timelineStored && json(draft) !== timelineInitial;
     updateScenePreview();
     const next = missingInput();
     missingButton.textContent = next ? tr(...previewActions[next]) : "";
@@ -1944,8 +2026,12 @@ function timelineView() {
     renderButton.disabled = Boolean(activeRender);
   };
   refreshTimelineState();
-  result.addEventListener("input", refreshTimelineState);
-  result.addEventListener("change", refreshTimelineState);
+  const edited = () => {
+    keepDraft();
+    refreshTimelineState();
+  };
+  result.addEventListener("input", edited);
+  result.addEventListener("change", edited);
   return result;
 }
 
@@ -2981,15 +3067,18 @@ async function proposalsView() {
       ]);
   };
   const openAppliedCut = () => {
+    const recovery = timelineRecovery ??= browserTimelineDrafts(projectId);
     const open = () => {
+      recovery.reset();
       timelineDraft = null;
       navigate("timeline");
     };
     const editBase = project.versions.find(version => version.id === timelineBase);
-    if (timelineDraft && json(timelineDraft) !== json(editBase?.data)) {
+    if (timelineDraft ? json(timelineDraft) !== json(editBase?.data) : recovery.current()) {
       modal(tr("Open the applied cut?", "Abrir o corte aplicado?"),
-        node("p", {}, tr("There are unsaved changes in this tab. Opening the applied cut discards those local edits.",
-          "Há alterações não salvas nesta aba. Abrir o corte aplicado descarta esses ajustes locais.")),
+        node("p", {}, recovery.current() && (!timelineDraft || timelineStored) ?
+          tr("Your work stays available through this browser's drafts.", "Seus ajustes continuam disponíveis nos rascunhos deste navegador.") :
+          tr("Opening the applied cut discards the edits in this tab.", "Abrir o corte aplicado descarta os ajustes desta aba.")),
         [button(tr("Open cut", "Abrir corte"), () => { ui("dialog").close(); open(); }, true)]);
     } else open();
   };
@@ -3075,6 +3164,7 @@ function render() {
   })] : []));
   ui("sidebar").hidden = !loggedIn;
   if (!loggedIn) {
+    timelineDraft = timelineRecovery = null;
     document.title = tr("Sign in", "Entrar") + " · Hyphotenic";
     ui("workspace").replaceChildren(loginView());
     return;

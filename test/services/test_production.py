@@ -878,6 +878,10 @@ def test_public_login_and_loopback_access(tmp_path):
     assert local.get("/api/health").status_code == 200
     assert local.get("/api/projects", headers=authorization).status_code == 200
     assert public.get("/api/health").status_code == 404
+    assert '/ui/timeline-drafts.js' in public.get("/").text
+    script = public.get("/ui/timeline-drafts.js")
+    assert script.status_code == 200
+    assert "javascript" in script.headers["content-type"]
     assert public.get("/api/projects", headers=authorization).status_code == 401
     assert public.get("/api/session").json() == {
         "authenticated": False,
