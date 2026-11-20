@@ -110,6 +110,104 @@ class Delivery:
             except RuleError as error:
                 return {"blocked": str(error)}
 
+    def costs(self, actor, pid, version):
+        with self.store.transaction(write=False) as db:
+            project = self.store.project(db, actor, pid)
+            export = self.store.asset(db, pid, version)
+            if export["kind"] != "export" or not export["media"]:
+                raise RuleError("Export not found", 404)
+            approval = self._export_approval(db, pid, export)
+            lineage = db.execute(
+                """WITH RECURSIVE linked(id) AS (
+                    SELECT id FROM versions WHERE project=? AND id=?
+                    UNION
+                    SELECT COALESCE(json_extract(dep.value,'$.id'),
+                                    json_extract(dep.value,'$.timeline_revision'))
+                    FROM linked JOIN versions v ON v.project=? AND v.id=linked.id,
+                         json_each(v.dependencies) dep
+                    WHERE json_extract(dep.value,'$.id') IS NOT NULL
+                       OR json_extract(dep.value,'$.timeline_revision') IS NOT NULL
+                )
+                SELECT v.job,v.kind,v.media IS NOT NULL AS has_media,v.id IS NULL AS missing
+                FROM linked LEFT JOIN versions v ON v.project=? AND v.id=linked.id""",
+                (pid, version, pid, pid),
+            ).fetchall()
+            job_links = {row["job"] for row in lineage if row["job"]}
+            jobs = db.execute(
+                """SELECT j.id,j.provider,l.actual,l.uncertain,l.reserved
+                FROM jobs j JOIN ledger l ON l.job=j.id
+                WHERE j.project=? AND j.created<=?
+                ORDER BY j.created DESC,j.ordinal DESC,j.id DESC""",
+                (pid, export["created"]),
+            ).fetchall()
+            fields = ("actual", "uncertain", "reserved")
+            groups = {
+                name: dict(dict.fromkeys((*fields, "jobs"), 0), job_ids=[])
+                for name in ("materials", "other")
+            }
+            included = set()
+            for job in jobs:
+                included.add(job["id"])
+                group = groups["materials" if job["id"] in job_links else "other"]
+                for field in fields:
+                    group[field] += job[field]
+                group["jobs"] += 1
+                group["job_ids"].append(job["id"])
+            material_kinds = {
+                "image",
+                "video",
+                "reference",
+                "voice",
+                "audio",
+                "assembly",
+                "export",
+            }
+            return {
+                "export": export["id"],
+                "seq": export["seq"],
+                "timeline_revision": export["data"].get("timeline_revision"),
+                "exported_at": export["created"],
+                "currency": project["data"]["currency"],
+                "approval": approval,
+                "totals": {
+                    field: groups["materials"][field] + groups["other"][field]
+                    for field in (*fields, "jobs")
+                },
+                **groups,
+                "subscription_jobs": sum(job["provider"] == "codex" for job in jobs),
+                "missing_versions": sum(row["missing"] for row in lineage),
+                "missing_job_links": len(job_links - included),
+                "media_without_job": sum(
+                    not row["job"]
+                    and row["has_media"]
+                    and row["kind"] in material_kinds
+                    for row in lineage
+                ),
+                "pending_job": next(
+                    (job["id"] for job in jobs if job["uncertain"]), None
+                ),
+            }
+
+    @staticmethod
+    def _export_approval(db, pid, export):
+        for dependency in export["dependencies"]:
+            ident = dependency.get("id")
+            if not ident:
+                continue
+            review = db.execute(
+                """SELECT a.id AS assembly,r.decision,r.created AS approved_at
+                FROM versions a JOIN reviews r ON r.version=a.id
+                WHERE a.project=? AND a.id=? AND a.kind='assembly' AND r.created<=?
+                ORDER BY r.created DESC,r.id DESC LIMIT 1""",
+                (pid, ident, export["created"]),
+            ).fetchone()
+            if review and review["decision"] == "APPROVED":
+                return {
+                    "assembly": review["assembly"],
+                    "approved_at": review["approved_at"],
+                }
+        return None
+
     def approve(self, actor, pid, request):
         with self.store.transaction() as db:
             project = self.store.project(db, actor, pid)

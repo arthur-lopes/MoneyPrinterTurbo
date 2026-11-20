@@ -2213,18 +2213,64 @@ function reviewNotes(assembly, player, items, activeNote, editNote) {
   return {add, panel: card(row(node("h2", {}, tr("Review notes", "Comentários da montagem")), count, filter), list)};
 }
 
+function deliveryCosts(cost) {
+  if (!cost) return null;
+  const heading = tr("Costs through export", "Custos até a exportação");
+  if (cost.unavailable) {
+    return card(node("h2", {}, heading), small(tr("Cost information is temporarily unavailable.",
+      "As informações de custo estão indisponíveis no momento.")));
+  }
+  const money = value => format(value, cost.currency);
+  const metric = (label, value) => node("div", {},
+    small(label), node("div", {class: "metric"}, money(value)));
+  const summary = (label, group) => node("p", {}, node("strong", {}, label), " · ",
+    money(group.actual) + " " + tr("verified", "confirmados"),
+    group.uncertain > 0 && " · " + money(group.uncertain) + " " + tr("to verify", "a verificar"),
+    group.reserved > 0 && " · " + money(group.reserved) + " " + tr("reserved", "reservados"));
+  const coverage = [
+    cost.missing_versions > 0 && tr("Some linked versions are unavailable.",
+      "Algumas versões vinculadas estão indisponíveis."),
+    cost.missing_job_links > 0 && tr("Some version links have no ledger entry.",
+      "Alguns vínculos de versão estão sem lançamento no estúdio."),
+    cost.media_without_job > 0 && tr("The export uses media with no linked generation job.",
+      "A exportação usa mídias sem trabalho de geração vinculado."),
+    cost.subscription_jobs > 0 && tr("Subscription usage is tracked by the provider.",
+      "O consumo da assinatura é registrado pelo provedor."),
+  ].filter(Boolean);
+  const pending = cost.pending_job && "/?project=" + projectId + "&view=costs&job=" + cost.pending_job;
+  return card(
+    node("h2", {}, heading + " v" + cost.seq),
+    small(cost.approval ?
+      tr("Assembly approved on ", "Montagem aprovada em ") + new Date(cost.approval.approved_at * 1000).toLocaleDateString() :
+      tr("Assembly approval history unavailable for this export.", "Histórico de aprovação da montagem indisponível para esta exportação.")),
+    node("div", {class: "grid stats"},
+      metric(tr("Verified in the studio", "Confirmado no estúdio"), cost.totals.actual),
+      metric(tr("Charges to verify", "Cobranças a verificar"), cost.totals.uncertain),
+      cost.totals.reserved > 0 && metric(tr("Reserved", "Reservado"), cost.totals.reserved)),
+    pending && node("a", {href: pending}, tr("Open job with a charge to verify", "Abrir trabalho com cobrança a verificar")),
+    cost.totals.jobs === 0 && small(tr("There are no ledger entries through this export.",
+      "Nenhum trabalho com lançamento até esta exportação.")),
+    coverage.length > 0 && small(coverage.join(" ")),
+    cost.totals.jobs > 0 && node("details", {}, node("summary", {}, tr("Cost breakdown", "Composição do custo")),
+      summary(tr("Work linked to the final materials", "Trabalhos ligados aos materiais usados"), cost.materials),
+      summary(tr("Other project work before export", "Outros trabalhos do projeto até a exportação"), cost.other)));
+}
+
 async function deliveryView() {
   const target = projectId;
   const endpoint = path("/delivery");
   const query = new URLSearchParams(location.search);
   const requested = query.get("assembly");
-  const latest = current("assembly"), exported = current("export");
+  const latest = current("assembly");
   const linked = requested && project.versions.find(item => item.id === requested && item.kind === "assembly" && item.url);
   const assembly = linked || latest;
   const historic = linked && linked.id !== latest?.id;
-  const [plan, annotation] = await Promise.all([
+  const exported = historic ? project.versions.find(item => item.kind === "export" &&
+    item.dependencies.some(dependency => dependency.id === assembly.id)) : current("export");
+  const [plan, annotation, cost] = await Promise.all([
     historic ? null : api(endpoint),
     assembly?.url ? api(path("/assemblies/" + assembly.id + "/notes")) : null,
+    exported?.url ? api(path("/exports/" + exported.id + "/costs")).catch(() => ({unavailable: true})) : null,
   ]);
   if (target !== projectId) return null;
   const matching = plan?.revision && assembly?.fresh && assembly.data.timeline_revision === plan.revision;
@@ -2265,9 +2311,9 @@ async function deliveryView() {
       "This assembly is unavailable in the project.", "A montagem do link está indisponível neste projeto.")));
   if (historic) return stack(title(tr("Review assembly v", "Revisão da montagem v") + assembly.seq,
     node("a", {href: "/?project=" + target + "&view=delivery"}, tr("Current delivery", "Entrega atual"))),
-    preview, feedback?.panel);
+    preview, files(exported, false), deliveryCosts(cost), feedback?.panel);
   if (plan.blocked) return stack(heading, preview, card(node("p", {role: "status"}, plan.blocked),
-    files(exported, false)), feedback?.panel);
+    files(exported, false)), deliveryCosts(cost), feedback?.panel);
 
   const materialNames = {scene: ["Storyboard", "Storyboard"], image: ["Reference frame", "Quadro de referência"],
     video: ["Take", "Tomada"], voice: ["Narration", "Narração"], translation: ["Translation", "Tradução"],
@@ -2346,7 +2392,7 @@ async function deliveryView() {
   const delivery = card(node("h2", {}, tr("Assembly and export", "Montagem e exportação")),
     small([tr("Cut v", "Corte v") + plan.seq, plan.aspect, plan.resolution + "p", plan.languages.join(", ")].join(" · ")),
     action, requestRevision, !delivered && files(exported, false));
-  return stack(heading, preview, delivery, feedback?.panel, checklist, assembly && revisions("assembly"), jobHistory());
+  return stack(heading, preview, delivery, deliveryCosts(cost), feedback?.panel, checklist, assembly && revisions("assembly"), jobHistory());
 }
 
 async function youtubeChannelView() {

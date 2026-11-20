@@ -65,6 +65,176 @@ def create_research(store, pid):
         return store.add(db, pid, "research", "research", {"sources": [], "claims": []})
 
 
+def test_export_costs_follow_immutable_versions_and_later_receipts(sandbox):
+    store, actor, pid = sandbox
+
+    def recorded_job(db, provider, created, *, actual=0, uncertain=0, reserved=0):
+        ident, quote = uuid4().hex, uuid4().hex
+        quoted = actual + uncertain + reserved
+        db.execute(
+            "INSERT INTO quotes VALUES(?,?,?,?,?)", (quote, pid, "[]", quoted, created)
+        )
+        db.execute(
+            "INSERT INTO authorizations VALUES(?,?,?,?)",
+            (quote, actor, quoted, created),
+        )
+        state = "DRAFT" if reserved else "FAILED" if uncertain else "COMPLETED"
+        db.execute(
+            """INSERT INTO jobs(id,project,quote,ordinal,slot,operation,provider,spec,status,available,created)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                ident,
+                pid,
+                quote,
+                0,
+                "research",
+                "research",
+                provider,
+                "{}",
+                state,
+                created,
+                created,
+            ),
+        )
+        db.execute(
+            """INSERT INTO ledger(job,reserved,actual,uncertain,quoted,period_day,period_month)
+            VALUES(?,?,?,?,?,?,?)""",
+            (ident, reserved, actual, uncertain, quoted, "2026-01-01", "2026-01"),
+        )
+        return ident
+
+    with store.transaction() as db:
+        shared = recorded_job(db, "openai", 10, actual=125)
+        subscription = recorded_job(db, "codex", 20)
+        failed = recorded_job(db, "runway", 30, uncertain=220)
+        queued = recorded_job(db, "runway", 40, reserved=90)
+        research = store.add(db, pid, "research", "research", {}, job=shared)
+        script = store.add(
+            db, pid, "script", "script", {}, [{"id": research["id"]}], job=shared
+        )
+        timeline = store.add(
+            db,
+            pid,
+            "timeline",
+            "timeline",
+            {},
+            [{"id": script["id"]}],
+            job=subscription,
+        )
+        audio = store.add(
+            db, pid, "upload/music", "audio", {}, media=uuid4().hex + ".wav"
+        )
+        picture = store.add(
+            db,
+            pid,
+            "upload/picture",
+            "reference",
+            {},
+            media=uuid4().hex + ".png",
+            job=uuid4().hex,
+        )
+        assembly = store.add(
+            db,
+            pid,
+            "assembly",
+            "assembly",
+            {"watermark": False},
+            [
+                {"timeline_revision": timeline["id"]},
+                {"id": script["id"]},
+                {"id": audio["id"]},
+                {"id": picture["id"]},
+                {"id": uuid4().hex},
+            ],
+            media=uuid4().hex + ".mp4",
+        )
+        db.execute(
+            "INSERT INTO reviews(version,actor,decision,comment,created) VALUES(?,?,?,?,?)",
+            (
+                assembly["id"],
+                actor,
+                "APPROVED",
+                "Reviewed before export",
+                assembly["created"],
+            ),
+        )
+        exported = store.add(
+            db,
+            pid,
+            "export",
+            "export",
+            {"timeline_revision": timeline["id"]},
+            [{"id": assembly["id"]}],
+            media=uuid4().hex + ".mp4",
+        )
+        later = recorded_job(db, "openai", exported["created"] + 1, actual=500)
+        db.execute(
+            "INSERT INTO reviews(version,actor,decision,comment,created) VALUES(?,?,?,?,?)",
+            (
+                assembly["id"],
+                actor,
+                "REVISION_REQUESTED",
+                "Later review",
+                exported["created"] + 1,
+            ),
+        )
+
+    client = TestClient(
+        create_app(
+            store.directory,
+            {"a" * 32: actor, "b" * 32: "another"},
+            worker_enabled=False,
+        ),
+        base_url="http://127.0.0.1",
+        headers={"Authorization": "Bearer " + "a" * 32},
+    )
+    url = f"/api/projects/{pid}/exports/{exported['id']}/costs"
+    assert (
+        client.get(url, headers={"Authorization": "Bearer " + "b" * 32}).status_code
+        == 404
+    )
+    assert client.get(url.replace(exported["id"], assembly["id"])).status_code == 404
+    cost = client.get(url).raise_for_status().json()
+    assert (
+        cost["export"] == exported["id"] and cost["timeline_revision"] == timeline["id"]
+    )
+    assert cost["approval"]["assembly"] == assembly["id"]
+    assert cost["materials"] == {
+        "actual": 125,
+        "uncertain": 0,
+        "reserved": 0,
+        "jobs": 2,
+        "job_ids": [subscription, shared],
+    }
+    assert cost["other"]["job_ids"] == [queued, failed]
+    assert later not in str(cost)
+    assert cost["totals"] == {
+        "actual": 125,
+        "uncertain": 220,
+        "reserved": 90,
+        "jobs": 4,
+    }
+    assert cost["pending_job"] == failed and cost["subscription_jobs"] == 1
+    assert cost["missing_versions"] == cost["missing_job_links"] == 1
+    assert cost["media_without_job"] == 3
+    store.settle(
+        actor,
+        pid,
+        failed,
+        m.Settlement(actual=180, receipt="mock receipt", confirmed=True),
+    )
+    settled = client.get(url).raise_for_status().json()
+    assert settled["totals"] == {
+        "actual": 305,
+        "uncertain": 0,
+        "reserved": 90,
+        "jobs": 4,
+    }
+    assert settled["pending_job"] is None
+    assert settled["approval"] == cost["approval"]
+    assert settled["other"]["job_ids"] == cost["other"]["job_ids"]
+
+
 def paid(
     store, actor, pid, monkeypatch, operation="research", provider="openai", budget=150
 ):

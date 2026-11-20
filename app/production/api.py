@@ -780,6 +780,10 @@ def create_app(
     def delivery_review(pid: m.Id, actor=Depends(authenticated)):
         return deliveries.snapshot(actor, pid)
 
+    @app.get("/api/projects/{pid}/exports/{version}/costs")
+    def export_costs(pid: m.Id, version: m.Id, actor=Depends(authenticated)):
+        return deliveries.costs(actor, pid, version)
+
     @app.post("/api/projects/{pid}/delivery/materials")
     def approve_delivery_materials(
         pid: m.Id, body: delivery.MaterialReview, actor=Depends(authenticated)
