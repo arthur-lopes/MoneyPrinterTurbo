@@ -9,7 +9,7 @@ let loginMethod = "token";
 let providerCurrency = null;
 let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null, timelineBase = null;
 let editing = false, polling = false;
-let activeScenePreview, editorPreview;
+let activeScenePreview, editorPreview, reviewEdit, reviewReturnFocus;
 let experimentVersion = null;
 let youtubeVersion = null;
 
@@ -172,6 +172,8 @@ async function changeProject(id) {
   sessionStorage.setItem("mpt-production-project", id);
   selected = new Set();
   timelineDraft = null;
+  reviewEdit = null;
+  reviewReturnFocus = null;
   experimentVersion = null;
   youtubeVersion = null;
   selectedClip = 0;
@@ -1123,6 +1125,11 @@ function timelineView() {
     };
   }
   const draft = timelineDraft;
+  const reviewContext = reviewEdit?.project === projectId ? reviewEdit : null;
+  const reviewIndex = reviewContext && reviewContext.revision === saved?.id &&
+    json(draft) === json(saved.data) ? draft.clips.findIndex(clip => clip.scene === reviewContext.scene) : -1;
+  let reviewOffset = reviewIndex >= 0 && !reviewContext.opened ? reviewContext.offset : null;
+  if (reviewOffset !== null) selectedClip = reviewIndex;
   const rough = roughCutAction({inEditor: true});
   const usable = item => ready(item) || (draft.watermark && item?.draft_preview &&
     item.fresh && item.status === "AWAITING_REVIEW");
@@ -1155,7 +1162,8 @@ function timelineView() {
     ["scene", tr("Live scene", "Prévia da cena")],
     ["clip", tr("Original take", "Tomada original")],
   ];
-  let explicitMode = sources.some(([value]) => value === remembered.mode) ? remembered.mode : null;
+  let explicitMode = reviewOffset === null && sources.some(([value]) => value === remembered.mode) ?
+    remembered.mode : null;
   let openingCut = !explicitMode && Boolean(cutLanguage);
   const mode = select(sources, explicitMode || (openingCut ? "cut" : fallbackMode));
   mode.setAttribute("aria-label", tr("Preview source", "Fonte da prévia"));
@@ -1258,7 +1266,11 @@ function timelineView() {
         const plan = await api(endpoint, "POST", JSON.parse(key)[1]);
         if (stillSelected()) {
           openingCut = false;
-          scenePlayer.apply(plan, draft.clips[selectedClip]?.scene);
+          scenePlayer.apply(plan, draft.clips[selectedClip]?.scene, view === "cut" ? reviewOffset ?? 0 : 0);
+          if (view === "cut" && reviewOffset !== null) {
+            reviewContext.opened = true;
+            reviewOffset = null;
+          }
         }
       } catch (error) {
         if (stillSelected()) {
@@ -1373,6 +1385,10 @@ function timelineView() {
 
   function selectClip(index, seekToScene) {
     syncPreviewLanguages();
+    if (seekToScene && reviewOffset !== null) {
+      reviewContext.opened = true;
+      reviewOffset = null;
+    }
     selectedClip = index;
     [...sequence.children].forEach((control, i) =>
       control.setAttribute("aria-pressed", String(i === index)));
@@ -1556,8 +1572,20 @@ function timelineView() {
       if (json(saved.data) !== json(draft) && !await saveTimeline()) return;
       navigate("delivery");
     }), activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
+  const reviewReference = reviewContext && stack(
+    node("details", {}, node("summary", {}, tr("Review note at ", "Comentário em ") + timecode(reviewContext.note.position_ms)),
+      node("p", {class: "review-note-text"}, reviewContext.note.body)),
+    reviewIndex < 0 && !reviewContext.opened && node("p", {role: "status"}, tr(
+      "Your editor has a different cut. Check the note on its reviewed assembly before applying it.",
+      "O corte do editor está diferente. Confira o comentário na montagem revisada antes de aplicar o ajuste.")),
+    row(button(tr("Back to review note", "Voltar ao comentário"), () => {
+      history.replaceState(null, "", reviewContext.note.url);
+      reviewReturnFocus = reviewContext.note.id;
+      navigate("delivery");
+    })));
   const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
-    node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo, previewRecovery),
+    node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo, previewRecovery,
+      reviewReference),
     sequence, inspector));
   const result = stack(title(project.data.title), rough || content, !rough && row(draftInfo), !rough && controls,
     assembly && card(node("h2", {}, tr("Review rendered version", "Revisar versão renderizada")), reviewControls(assembly),
@@ -1592,7 +1620,7 @@ function timecode(ms) {
     "." + String(ms % 1000).padStart(3, "0");
 }
 
-function reviewNotes(assembly, player, items, activeNote) {
+function reviewNotes(assembly, player, items, activeNote, editNote) {
   const endpoint = path("/assemblies/" + assembly.id + "/notes");
   const list = stack();
   const count = node("small", {role: "status"});
@@ -1634,7 +1662,7 @@ function reviewNotes(assembly, player, items, activeNote) {
         items = items.map(item => item.id === next.id ? next : item);
         redraw();
         (ui("review-note-" + note.id) || filter).focus({preventScroll: true});
-      }), button(tr("Copy timestamp link", "Copiar link do trecho"), async () => {
+        }), editNote?.(note), button(tr("Copy timestamp link", "Copiar link do trecho"), async () => {
         await navigator.clipboard.writeText(new URL(note.url, location.origin).href);
         notify(tr("Timestamp link copied", "Link do trecho copiado"));
       })));
@@ -1692,7 +1720,19 @@ async function deliveryView() {
   const marked = linked && annotation?.notes.find(note => note.id === query.get("note"));
   const position = marked?.position_ms ?? (/^\d{1,10}$/.test(timestamp || "") ? Number(timestamp) : null);
   if (player && linked && position !== null) seekAssembly(player, position / 1000);
-  const feedback = player && annotation && reviewNotes(assembly, player, annotation.notes, marked?.id);
+  const editNote = matching ? note => {
+    const time = note.position_ms / 1000;
+    const scene = plan.scenes.find((item, i) => item.start <= time &&
+      (time < item.end || (i === plan.scenes.length - 1 && time === item.end)));
+    if (!scene) return null;
+    return button(tr("Edit this moment", "Editar cena deste trecho"), async () => {
+      await refresh(false);
+      if (target !== projectId || page !== "delivery") return;
+      reviewEdit = {project: target, revision: plan.revision, scene: scene.id, offset: time - scene.start, note};
+      navigate("timeline");
+    });
+  } : null;
+  const feedback = player && annotation && reviewNotes(assembly, player, annotation.notes, marked?.id, editNote);
   const previous = historic || (assembly && (!assembly.fresh || (assembly.data.timeline_revision && !matching)));
   const preview = player && card(node("div", {class: "preview-stage"}, player), row(assetBadge(assembly),
     small(tr("Assembly v", "Montagem v") + assembly.seq),
@@ -2671,7 +2711,13 @@ function render() {
     ui("workspace").replaceChildren(node("p", {}, tr("Loading…", "Carregando…")));
     execute(async () => {
       const view = await asyncViews[loadingPage]();
-      if (view && page === loadingPage && projectId === loadingProject && loggedIn) ui("workspace").replaceChildren(view);
+      if (view && page === loadingPage && projectId === loadingProject && loggedIn) {
+        ui("workspace").replaceChildren(view);
+        if (page === "delivery" && reviewReturnFocus) {
+          ui("review-note-" + reviewReturnFocus)?.focus();
+          reviewReturnFocus = null;
+        }
+      }
     });
     return;
   }
@@ -2681,6 +2727,8 @@ function render() {
 }
 
 function navigate(name) {
+  if (name !== "timeline") reviewEdit = null;
+  if (name !== "delivery") reviewReturnFocus = null;
   page = name;
   render();
   ui("workspace").focus();

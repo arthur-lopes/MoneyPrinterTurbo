@@ -287,7 +287,7 @@ function createScenePreview(onScene) {
     frame.hidden = controls.hidden = true;
   }
 
-  function apply(next, selected) {
+  function apply(next, selected, offset = 0) {
     const continuous = Boolean(next.clips);
     const clips = next.clips || [{...next, start: 0}];
     const key = JSON.stringify([continuous, next.aspect, next.music, next.music_volume,
@@ -307,8 +307,10 @@ function createScenePreview(onScene) {
     time.max = next.seconds;
     pending = false;
     status.textContent = "";
-    if (changed) activate(Math.max(0, clips.findIndex(clip => clip.scene === selected)), 0);
-    else slots.forEach(slot => { if (slot.index >= 0) prepare(slot, slot.index); });
+    if (changed) {
+      const index = Math.max(0, clips.findIndex(clip => clip.scene === selected));
+      activate(index, Math.min(offset, clips[index].seconds));
+    } else slots.forEach(slot => { if (slot.index >= 0) prepare(slot, slot.index); });
     syncControls();
     showPosition();
   }
