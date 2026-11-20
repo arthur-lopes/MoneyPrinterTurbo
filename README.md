@@ -41,6 +41,14 @@ Local previews and motion clips work offline. Narration can use installed Window
 
 See the [product requirements](PRD.md), [architecture](ARCHITECTURE.md), [API](API_DOCUMENTATION.md), [security scope](SECURITY.md), and [tests](TESTING.md).
 
+### Use your Google Flow credits for scene clips
+
+Under **Settings → Default providers → Video for new scenes**, choose **Google Flow · manual import**. For individual scenes, use **Edit scene** to select Google Flow. Flow scenes skip automatic video estimates and use the import below. The quick draft still uses the local renderer so it can be reviewed before final footage is prepared.
+
+In **Scene generation**, open **Google Flow** on a scene with an approved storyboard and frame. Copy the prompt, download the frame, and open Flow in a separate tab. Sign in with the Google account that holds your credits. Paste the prompt, attach the frame, and check the credit cost before generating. Download the MP4 and import it from the same scene dialog. The studio creates a new version awaiting review and retains the earlier takes. Scene footage is imported without audio for use with the studio's separate sound tracks.
+
+Generation and credit usage happen in Google Flow. The studio records the imported clip's declared source and the approved scene and frame versions. [Google Flow credits](https://support.google.com/flow/answer/16526234) · [Downloading Google Flow clips](https://support.google.com/flow/answer/16935308)
+
 ### Use your ChatGPT plan in production
 
 The **Codex · ChatGPT plan** provider uses the official local Codex CLI for research from supplied sources, scripts and translations. Run `codex login status` and look for `Logged in using ChatGPT`. Use `codex login` if you need to sign in. Launch the studio under the same OS account, check **Providers**, then choose Codex when estimating a text job or set it under **Settings → Default providers**.

@@ -506,8 +506,11 @@ class Workbench(Store):
                 for ref in scene["data"]["references"]
             ]
         if kind == "video":
-            provider = request.provider or scene["data"]["provider"]
-            if provider != scene["data"]["provider"]:
+            scene_provider = scene["data"]["provider"]
+            if scene_provider == "google_flow":
+                raise RuleError("Generate this clip in Google Flow and import it for review")
+            provider = request.provider or scene_provider
+            if provider != scene_provider:
                 raise RuleError("Approve a scene revision with the selected provider")
             animation = request.animation
             if animation:

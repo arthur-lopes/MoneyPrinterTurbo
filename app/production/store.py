@@ -442,6 +442,7 @@ class Store:
                         self.scene_version(
                             db, pid, sid, m.Scene.model_validate(data), script
                         )
+            video_provider = project.get("defaults", {}).get("video", "local")
             for section in script["data"]["sections"]:
                 key = section["key"]
                 if key in represented:
@@ -461,10 +462,8 @@ class Store:
                     image_prompt=description,
                     video_prompt=section.get("visual_beat")
                     or "Slow camera movement across the approved composition.",
-                    provider=project.get("defaults", {}).get("video", "local"),
-                    model="gen4_turbo"
-                    if project.get("defaults", {}).get("video") == "runway"
-                    else "motion",
+                    provider=video_provider,
+                    model=m.SCENE_VIDEO_MODELS[video_provider],
                 )
                 db.execute(
                     "INSERT INTO scenes(id,project,position) VALUES(?,?,?)",
@@ -492,10 +491,7 @@ class Store:
                     "Approve uploaded reference images before attaching them"
                 )
             deps.append({"id": ref})
-        if (data.provider, data.model) not in {
-            ("local", "motion"),
-            ("runway", "gen4_turbo"),
-        }:
+        if data.model != m.SCENE_VIDEO_MODELS[data.provider]:
             raise RuleError("Choose a supported scene provider and model")
         return self.add(
             db, pid, f"scene/{sid}", "scene", data.model_dump(), deps, job=job

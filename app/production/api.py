@@ -1048,10 +1048,20 @@ def create_app(
         title: m.Short,
         scene: m.Id | None = None,
         language: m.Language | None = None,
+        source_provider: Literal["google_flow"] | None = None,
+        scene_version: m.Id | None = None,
+        image_version: m.Id | None = None,
         actor=Depends(authenticated),
     ):
         def import_source(db):
             project = store.project(db, actor, pid)["data"]
+            if source_provider and (
+                kind != "video" or not scene_version or not image_version
+            ):
+                raise RuleError(
+                    "Google Flow imports require a video, scene version and image version",
+                    422,
+                )
             if kind not in {"image", "video", "voice"}:
                 return None, [], {"title": title}
             if not scene or scene not in store.order(db, pid):
@@ -1070,10 +1080,21 @@ def create_app(
                 )
             if kind == "video":
                 image = store.require(db, pid, f"image/{scene}")
+                data = {"title": title}
+                if source_provider:
+                    if (scene_version, image_version) != (
+                        storyboard["id"],
+                        image["id"],
+                    ):
+                        raise RuleError(
+                            "The approved scene or frame changed. Refresh the project "
+                            "and reopen the Google Flow dialog."
+                        )
+                    data["source_provider"] = source_provider
                 return (
                     f"video/{scene}",
                     [{"id": storyboard["id"]}, {"id": image["id"]}],
-                    {"title": title},
+                    data,
                 )
             if language not in project["languages"]:
                 raise RuleError("Choose a supported narration language")

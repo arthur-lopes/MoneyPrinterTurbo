@@ -54,10 +54,12 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | POST /api/projects/{project}/jobs/{job}/settle | Record integer `actual`, `receipt`, and `confirmed: true`. |
 | PUT /api/projects/{project}/budget | Set `scope`, optional `target`, integer `limit`, and `confirmed: true`. |
 | GET, PUT /api/providers | Read capabilities and credential availability or configure API providers. The Codex read-only entry reports whether the local CLI is signed into ChatGPT. |
-| POST /api/projects/{project}/uploads | Raw bytes. Use query `kind=reference\|image\|audio\|video\|voice` and `title`. Storyboard images, video, and voice use `scene`. Voice also uses `language`. |
+| POST /api/projects/{project}/uploads | Raw bytes. Use query `kind=reference\|image\|audio\|video\|voice` and `title`. Storyboard images, video, and voice use `scene`. Voice also uses `language`. For video prepared in Google Flow, pass `source_provider=google_flow`, `scene_version`, and `image_version` to record its declared source and require the same approved inputs. |
 | GET, HEAD /api/projects/{project}/media/{version} | Owner-authenticated media, single byte range, optional `attachment=true`. |
 
 Job operations are `research`, `script`, `image`, `video`, `translation`, `voice`, `rough_cut`, `assembly`, `export` and `analysis`. Include the scene ID for scene operations and the language for translation and voice. Pass the saved timeline ID as `version` for assembly or pass an inline `timeline`. Export takes the approved assembly ID as `version`. Validation errors return 422. Missing private resources return 404. Conflicting versions, approvals or budgets return 409. Schema definitions are in `app/production/models.py`.
+
+Set the project default `video` to `google_flow` or save a scene with `provider=google_flow` and `model=import`. Flow footage arrives through `/uploads` and uses the regular review and assembly workflow. Quoting automatic video generation for a Flow scene returns 409.
 
 In the workspace, choose **Projects → New project → Project template → HYPHOTENIC** and select a series. The equivalent `POST /api/projects` request uses `channel: "hyphotenic"`, `series` (`what-if`, `alternate-history`, `first-24-hours`, or `shorts`), `public_title`, and `topic`. It accepts the optional `changed_condition`, `unchanged_conditions`, `scope`, and `sources`. Supplied sources become a research draft awaiting review. Optional `duration`, `structure`, `audience`, `tone`, `languages`, and individual `style` fields override inherited values. The project stores the chosen profile revision and plans in BRL.
 

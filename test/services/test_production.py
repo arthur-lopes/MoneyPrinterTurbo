@@ -855,6 +855,132 @@ def write_voice(destination):
         output.writeframes(bytes(24000))
 
 
+def test_google_flow_scene_uses_reviewed_import_in_final_assembly(sandbox):
+    store, actor, pid = sandbox
+    with store.transaction() as db:
+        db.execute(
+            "UPDATE projects SET data=json_set(data,'$.structure',json('[\"Opening\"]')) WHERE id=?",
+            (pid,),
+        )
+    base = f"/api/projects/{pid}"
+    app = create_app(
+        store.directory,
+        {"a" * 32: actor, "b" * 32: "other"},
+        worker_enabled=False,
+        allowed_hosts=("testserver",),
+    )
+    client = TestClient(app, headers={"Authorization": "Bearer " + "a" * 32})
+    defaults = client.get(base).json()["data"]["defaults"]
+    defaults["video"] = "google_flow"
+    assert client.put(base + "/defaults", json=defaults).json()["defaults"] == defaults
+    [sid] = prepare(store, actor, pid)
+    scene = review(store, actor, pid, head(store, pid, f"scene/{sid}"))
+    assert (scene["data"]["provider"], scene["data"]["model"]) == ("google_flow", "import")
+    png = BytesIO()
+    Image.new("RGB", (32, 24)).save(png, format="PNG")
+
+    def approve_frame():
+        response = client.post(
+            base + "/uploads",
+            params={"kind": "image", "scene": sid, "title": "Approved frame"},
+            content=png.getvalue(),
+        )
+        assert response.status_code == 201
+        return review(store, actor, pid, response.json())
+
+    frame = approve_frame()
+    for provider in ({}, {"provider": "runway"}):
+        denied = client.post(
+            base + "/quotes",
+            json={"jobs": [{"operation": "video", "scene": sid, **provider}]},
+        )
+        assert denied.status_code == 409
+        assert "Google Flow" in denied.json()["detail"]
+    source = store.directory / "flow-fixture.mp4"
+    media.ffmpeg(
+        ["-f", "lavfi", "-i", "color=size=32x24:duration=1", "-c:v", "libx264", source],
+        cwd=store.directory,
+        stop=lambda: False,
+        timeout=15,
+    )
+    clip = source.read_bytes()
+    params = {"kind": "video", "scene": sid, "title": "Reviewed footage"}
+    response = client.post(base + "/uploads", params=params, content=clip)
+    assert response.status_code == 201
+    earlier = review(store, actor, pid, response.json())
+    assert "source_provider" not in earlier["data"]
+
+    params.update(source_provider="google_flow", scene_version=scene["id"])
+    assert (
+        client.post(base + "/uploads", params=params, content=clip).status_code == 422
+    )
+    current_frame = approve_frame()
+    params["image_version"] = frame["id"]
+    assert (
+        client.post(base + "/uploads", params=params, content=clip).status_code == 409
+    )
+    params["image_version"] = current_frame["id"]
+    assert (
+        client.post(
+            base + "/uploads",
+            params=params,
+            content=clip,
+            headers={"Authorization": "Bearer " + "b" * 32},
+        ).status_code
+        == 404
+    )
+    before = client.get(base).json()
+    response = client.post(base + "/uploads", params=params, content=clip)
+    assert response.status_code == 201
+    imported = response.json()
+    assert imported["slot"] == f"video/{sid}"
+    assert imported["status"] == "AWAITING_REVIEW"
+    assert imported["seq"] == 2
+    assert imported["data"]["source_provider"] == "google_flow"
+    assert imported["dependencies"] == [
+        {"id": scene["id"]},
+        {"id": current_frame["id"]},
+    ]
+    assert client.get(imported["url"]).headers["content-type"] == "video/mp4"
+    after = client.get(base).json()
+    assert before["jobs"] == after["jobs"]
+    assert before["costs"] == after["costs"]
+    assert client.get(earlier["url"]).status_code == 200
+
+    voice = store.directory / "flow-voice.wav"
+    write_voice(voice)
+    narration = client.post(
+        base + "/uploads",
+        params={"kind": "voice", "scene": sid, "title": "Narration", "language": "en-US"},
+        content=voice.read_bytes(),
+    )
+    assert narration.status_code == 201
+    review(store, actor, pid, narration.json())
+    assembly = {
+        "operation": "assembly",
+        "timeline": {
+            "clips": [{"scene": sid, "seconds": 1}],
+            "languages": ["en-US"],
+            "resolution": 720,
+            "watermark": False,
+        },
+    }
+    assert client.post(base + "/quotes", json={"jobs": [assembly]}).status_code == 409
+    assert review(store, actor, pid, imported)["status"] == "APPROVED"
+    authorize(store, actor, pid, assembly)
+    worker = Worker(store)
+    assert worker.step()
+    rendered = head(store, pid, "assembly")
+    assert rendered["data"]["retention"][0]["video"] == imported["id"]
+    review(store, actor, pid, rendered)
+    authorize(store, actor, pid, {"operation": "export", "version": rendered["id"]})
+    assert worker.step()
+    exported = head(store, pid, "export")
+    assert client.get(exported["url"]).headers["content-type"] == "video/mp4"
+    with av.open(str(media.asset_path(worker.root, exported["media"]))) as result:
+        assert next(result.decode(video=0)).height == 720
+
+
 def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     store, actor, pid = sandbox
     scenes = prepare(store, actor, pid)

@@ -103,6 +103,7 @@ const parse = element => JSON.parse(element.value);
 const json = value => JSON.stringify(value, null, 2);
 const codexOption = () => ["codex", tr("Codex · ChatGPT plan", "Codex · assinatura ChatGPT")];
 const apiOption = ["openai", "OpenAI API"];
+const flowOption = () => ["google_flow", tr("Google Flow · manual import", "Google Flow · importação manual")];
 
 function notify(message, error = false) {
   const feedback = error && ui("dialog").open && ui("dialog-feedback");
@@ -312,18 +313,42 @@ function revisions(slot) {
   return details;
 }
 
-function importAsset(kind, scene, language) {
+function importAsset(kind, scene, language, {heading, instructions, title = "", source = {}} = {}) {
   const types = {image: "image/png,image/jpeg,image/webp", video: "video/mp4,video/quicktime", voice: "audio/wav,audio/mpeg,audio/flac"};
   const file = input("", {type: "file", accept: types[kind]});
-  const name = input();
-  modal(tr("Import prepared media", "Importar mídia preparada"), stack(label(tr("Media title", "Título da mídia"), name),
+  const name = input(title, {maxlength: 200});
+  const uploadUrl = path("/uploads?");
+  modal(heading || tr("Import prepared media", "Importar mídia preparada"), stack(instructions, label(tr("Media title", "Título da mídia"), name),
     label(tr("Media file", "Arquivo de mídia"), file)), [button(tr("Upload for review", "Enviar para revisão"), async () => {
     if (!file.files[0] || !name.value.trim()) throw new Error(tr("Choose a file and enter its title", "Selecione o arquivo e informe o título"));
-    const params = new URLSearchParams({kind, scene, title: name.value});
+    const params = new URLSearchParams({kind, scene, title: name.value, ...source});
     if (language) params.set("language", language);
-    await mutate(path("/uploads?" + params.toString()), "POST", file.files[0]);
+    await mutate(uploadUrl + params.toString(), "POST", file.files[0]);
     ui("dialog").close();
   }, true)]);
+}
+
+function importFlowClip(sid, scene, image) {
+  const {video_prompt, negative_prompt, title, seconds} = scene.data;
+  const prompt = area(negative_prompt ? `${video_prompt}\n\nAvoid: ${negative_prompt}` : video_prompt,
+    {readonly: true, rows: 5});
+  importAsset("video", sid, undefined, {
+    heading: "Google Flow · " + title,
+    title,
+    source: {source_provider: "google_flow", scene_version: scene.id, image_version: image.id},
+    instructions: stack(
+      label(tr("Scene video prompt", "Prompt de vídeo da cena"), prompt),
+      row(button(tr("Copy prompt", "Copiar prompt"), async () => {
+        await navigator.clipboard.writeText(prompt.value);
+        notify(tr("Prompt copied", "Prompt copiado"));
+      }), node("a", {href: image.url + "?attachment=true"}, tr("Download approved frame", "Baixar quadro aprovado")),
+      node("a", {href: "https://flow.google.com/", target: "_blank", rel: "noopener noreferrer"}, tr("Open Google Flow", "Abrir Google Flow"))),
+      small(tr("Planned format", "Formato previsto") + ` · ${project.data.style.aspect} · ${seconds} s`),
+      node("p", {}, tr(
+        "In Flow, use your Google account, paste the prompt, and add the frame as a reference. Check the credit cost there before generating. Download the MP4 and select it below. Scene clips are imported without audio.",
+        "No Flow, use sua conta Google, cole o prompt e adicione o quadro como referência. Confira o custo em créditos antes de gerar. Baixe o MP4 e selecione-o abaixo. O clipe da cena é importado sem áudio.")),
+    ),
+  });
 }
 
 function loginView() {
@@ -840,7 +865,8 @@ function editScene(sid, item) {
       input(data[key], {...attrs, type: key === "seconds" ? "number" : "text"});
     return label(tr(...labels), field);
   });
-  const provider = select([["local", tr("Local motion", "Movimento local")], ["runway", "Runway · Gen-4 Turbo"]], data.provider);
+  const models = {local: "motion", runway: "gen4_turbo", google_flow: "import"};
+  const provider = select([["local", tr("Local motion", "Movimento local")], ["runway", "Runway · Gen-4 Turbo"], flowOption()], data.provider);
   const overrides = area(json(data.style_overrides));
   const references = project.versions.filter(v => v.kind === "reference" && ready(v)).map(v => {
     const choice = input("", {type: "checkbox", checked: data.references.includes(v.id)});
@@ -850,7 +876,7 @@ function editScene(sid, item) {
     label(tr("Style overrides", "Ajustes de estilo"), overrides), small(tr("Approved references", "Referências aprovadas")),
     ...references.map(([, , field]) => field)), [button(tr("Save scene revision", "Salvar revisão da cena"), async () => {
       await mutate(path("/scenes/" + sid), "PUT", {...data, provider: provider.value,
-        model: provider.value === "runway" ? "gen4_turbo" : "motion", style_overrides: parse(overrides),
+        model: models[provider.value], style_overrides: parse(overrides),
         references: references.filter(([, check]) => check.checked).map(([id]) => id)});
       ui("dialog").close();
     }, true)]);
@@ -1013,27 +1039,33 @@ function chooseAnimation(sid, scene, clip) {
 }
 
 function scenesView() {
-  const eligible = sid => ready(sceneData(sid)) && ready(current("image/" + sid)) && !ready(current("video/" + sid));
+  const eligible = sid => {
+    const scene = sceneData(sid);
+    return ready(scene) && scene.data.provider !== "google_flow" && ready(current("image/" + sid)) && !ready(current("video/" + sid));
+  };
   return stack(title(tr("Scene generation", "Geração de cenas")),
     row(button(tr("Estimate all eligible scenes", "Estimar todas as cenas elegíveis"),
       () => quote(project.scenes.filter(eligible).map(scene => ({operation: "video", scene}))), true,
       !project.scenes.some(eligible))),
     grid(...project.scenes.map(sid => {
       const scene = sceneData(sid), image = current("image/" + sid), clip = current("video/" + sid);
+      const usesFlow = scene.data.provider === "google_flow";
       const jobs = project.jobs.filter(job => job.slot === "video/" + sid);
       const generating = jobs.some(job => ["DRAFT", "GENERATING"].includes(job.status));
       return card(row(node("h2", {}, scene.data.title), assetBadge(clip)), mediaPreview(clip),
-        node("p", {}, scene.data.narration), small([scene.data.provider, scene.data.model, scene.data.seconds + " s",
+        clip?.data.source_provider === "google_flow" && small(tr("Imported from Google Flow", "Importado do Google Flow")),
+        node("p", {}, scene.data.narration), small([usesFlow ? flowOption()[1] : `${scene.data.provider} · ${scene.data.model}`, scene.data.seconds + " s",
           clip ? clip.data.resolution + "p" : "", jobs.reduce((sum, job) => sum + job.attempts, 0) + " " + tr("attempts", "tentativas")]
           .filter(Boolean).join(" · ")),
         node("p", {}, scene.data.video_prompt), image && node("details", {}, node("summary", {}, tr("Reference image", "Imagem de referência")), mediaPreview(image)),
         jobs[0] && small(tr("Last estimate ", "Última estimativa ") + format(jobs[0].quoted) + " · " +
           tr("Actual ", "Efetivo ") + format(jobs[0].actual) + " · " + tr("Uncertain ", "Incerto ") + format(jobs[0].uncertain)),
-        row(button(clip ? tr("Estimate replacement", "Estimar substituição") : tr("Estimate generation", "Estimar geração"),
+        row(!usesFlow && button(clip ? tr("Estimate replacement", "Estimar substituição") : tr("Estimate generation", "Estimar geração"),
           () => quote([{operation: "video", scene: sid}]), true, generating || !eligible(sid)),
         scene.data.provider === "local" && button(tr("Local animation", "Animação local"),
           () => chooseAnimation(sid, scene, clip), false, generating || !ready(scene)),
         button(tr("Edit prompt or model", "Editar prompt ou modelo"), () => editScene(sid, scene)),
+        button("Google Flow", () => importFlowClip(sid, scene, image), usesFlow, !ready(scene) || !ready(image)),
         button(tr("Import clip", "Importar clipe"), () => importAsset("video", sid), false, !ready(scene) || !ready(image))), reviewControls(clip),
         revisions("video/" + sid));
     })), jobsTable());
@@ -2625,6 +2657,7 @@ function settingsView() {
     const options = key === "translation" ? [codexOption(), apiOption] : [["local", "Local"]];
     if (key === "research" || key === "script") options.push(codexOption());
     if (key !== "translation") options.push(key === "video" ? ["runway", "Runway"] : apiOption);
+    if (key === "video") options.push(flowOption());
     if (key === "voice") options.push(["elevenlabs", "ElevenLabs"]);
     const field = select(options, defaults[key] || (key === "translation" ? "openai" : "local"));
     field.addEventListener("change", () => { defaults[key] = field.value; });

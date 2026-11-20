@@ -63,12 +63,16 @@ class Style(Input):
     aspect: Literal["16:9", "9:16"] = "16:9"
 
 
+SceneVideoProvider = Literal["local", "runway", "google_flow"]
+SCENE_VIDEO_MODELS = {"local": "motion", "runway": "gen4_turbo", "google_flow": "import"}
+
+
 class ProviderDefaults(Input):
     research: Literal["local", "openai", "codex"] = "local"
     script: Literal["local", "openai", "codex"] = "local"
     translation: Literal["openai", "codex"] = "openai"
     image: Literal["local", "openai"] = "local"
-    video: Literal["local", "runway"] = "local"
+    video: SceneVideoProvider = "local"
     voice: Literal["local", "openai", "elevenlabs"] = "local"
 
 
@@ -260,8 +264,8 @@ class Scene(Input):
         ],
         Short,
     ] = Field(default_factory=dict)
-    provider: Literal["local", "runway"] = "local"
-    model: Literal["motion", "gen4_turbo"] = "motion"
+    provider: SceneVideoProvider = "local"
+    model: Literal["motion", "gen4_turbo", "import"] = "motion"
 
 
 class Translation(Input):
