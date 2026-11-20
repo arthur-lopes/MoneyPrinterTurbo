@@ -18,11 +18,11 @@ let youtubeVersion = null;
 const tr = (en, pt) => locale === "pt" ? pt : en;
 const navLabels = {
   catalog: ["Editorial catalog", "Catálogo editorial"],
-  dashboard: ["Dashboard", "Painel"], projects: ["Projects", "Projetos"], research: ["Research", "Pesquisa"],
+  dashboard: ["Project overview", "Visão geral"], projects: ["Projects", "Projetos"], research: ["Research", "Pesquisa"],
   scripts: ["Scripts", "Roteiros"], storyboard: ["Storyboard", "Storyboard"], scenes: ["Scene generation", "Geração de cenas"],
   narration: ["Narration", "Narração"], timeline: ["Timeline", "Linha do tempo"], assets: ["Asset library", "Biblioteca"],
   thumbnails: ["Thumbnails", "Miniaturas"],
-  delivery: ["Delivery review", "Revisão da entrega"],
+  delivery: ["Review and export", "Revisar e exportar"],
   analysis: ["Experiments and performance", "Testes e desempenho"],
   channel: ["YouTube channel", "Canal do YouTube"],
   youtube: ["YouTube publishing", "Publicação no YouTube"],
@@ -41,12 +41,12 @@ const productionStages = {
   SCENE_REVIEW: ["scenes", "Review footage", "Revisar tomadas"],
   VIDEO_ASSEMBLY: ["timeline", "Open editor", "Abrir editor"],
   FINAL_REVIEW: ["delivery", "Review delivery", "Revisar entrega"],
-  EXPORT: ["timeline", "View delivery", "Ver entrega"],
+  EXPORT: ["delivery", "View delivery", "Ver entrega"],
 };
 const projectNavigation = [
   ["Story", "Pauta e roteiro", ["research", "scripts"]],
   ["Scenes and voice", "Cenas e narração", ["storyboard", "scenes", "narration"]],
-  ["Assets and publishing", "Acervo e publicação", ["delivery", "assets", "thumbnails", "youtube", "analysis"]],
+  ["Assets and publishing", "Acervo e publicação", ["assets", "thumbnails", "youtube", "analysis"]],
   ["Studio settings", "Operação", ["proposals", "costs", "providers", "settings"]],
 ];
 const states = {
@@ -663,10 +663,10 @@ function dashboard() {
   const needsVoice = project.stage === "VIDEO_ASSEMBLY" && project.scenes.some(scene =>
     project.data.languages.some(language => !ready(current("voice/" + scene + "/" + language))));
   return stack(title(d.title, badge(project.stage)),
-    node("p", {}, d.topic), small([d.audience, d.languages.join(", "), d.duration + " s"].join(" · ")),
-    d.profile && profileOverview(d),
     rough || row(button(needsVoice ? tr("Prepare narration", "Preparar narração") : tr(en, pt),
       () => navigate(needsVoice ? "narration" : next), true)),
+    node("p", {}, d.topic), small([d.audience, d.languages.join(", "), d.duration + " s"].join(" · ")),
+    d.profile && profileOverview(d),
     d.editorial && card(node("h2", {}, d.editorial.id + " · " + d.editorial.series),
       node("p", {}, d.editorial.opening_hook), node("p", {}, d.editorial.visual_plan),
       d.editorial.evidence && evidenceBrief(d.editorial.evidence),
@@ -2066,14 +2066,16 @@ function timelineView() {
       outputDetails.querySelector("summary").focus();
     } else if (next) navigate(next);
   }, true);
+  const reviewDelivery = saved && button("", async () => {
+    if (json(saved.data) !== json(draft) && !await saveTimeline()) return;
+    if (page === "timeline") navigate("delivery");
+  });
   const controls = row(
     button(tr("Save timeline", "Salvar linha do tempo"), async () => {
       if (await saveTimeline()) notify(tr("Timeline saved", "Linha do tempo salva"));
     }, false, !draft.clips.length),
-    missingButton, renderButton, saved && button(tr("Review delivery", "Revisar entrega"), async () => {
-      if (json(saved.data) !== json(draft) && !await saveTimeline()) return;
-      navigate("delivery");
-    }), activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
+    missingButton, renderButton, reviewDelivery,
+    activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
   const reviewReference = reviewContext && stack(
     node("details", {}, node("summary", {}, tr("Review note at ", "Comentário em ") + timecode(reviewContext.note.position_ms)),
       node("p", {class: "review-note-text"}, reviewContext.note.body)),
@@ -2093,9 +2095,9 @@ function timelineView() {
   const combine = button(tr("Combine versions", "Combinar versões"), combineTimeline, true);
   const browserDrafts = button(tr("Browser drafts", "Rascunhos neste navegador"), openBrowserDrafts);
   const result = stack(title(project.data.title), row((!rough || timelineStored) && draftInfo, combine, loadSaved, browserDrafts),
-    rough || content,
-  !rough && controls,
-    assembly && card(node("h2", {}, tr("Review rendered version", "Revisar versão renderizada")), reviewControls(assembly),
+    rough || [controls, content],
+    assembly && node("details", {}, node("summary", {}, tr("Rendered versions", "Versões renderizadas")),
+      card(reviewControls(assembly),
       row(node("a", {href: assembly.url + "?attachment=true"}, tr("Download assembly", "Baixar montagem")),
         !exported?.fresh && !assembly.data.watermark && button(tr("Prepare approved export", "Preparar exportação aprovada"),
           () => quote([{operation: "export", version: assembly.id}]), true, !ready(assembly))),
@@ -2103,7 +2105,7 @@ function timelineView() {
         tr("Download final MP4", "Baixar MP4 final") : tr("Download previous MP4", "Baixar MP4 anterior")),
         ...Object.entries(exported.data.captions || {}).map(([lang, id]) => node("a",
           {href: path("/media/" + id + "?attachment=true")}, lang + " · SRT"))),
-      revisions("assembly"), exported && revisions("export")), !rough && outputDetails,
+      revisions("assembly"), exported && revisions("export"))), !rough && outputDetails,
     current("timeline") && button(tr("Review agent proposals", "Revisar propostas de agentes"), () => navigate("proposals")),
     node("details", {}, node("summary", {}, tr("Audience retention", "Retenção de público")), retentionPanel(assembly)), jobHistory());
   const refreshTimelineState = () => {
@@ -2118,6 +2120,14 @@ function timelineView() {
     missingButton.hidden = !next;
     renderButton.hidden = Boolean(next);
     renderButton.disabled = Boolean(activeRender);
+    if (reviewDelivery) {
+      const dirty = json(saved.data) !== json(draft);
+      const rendered = !next && !dirty && assembly?.url && assembly.fresh && assembly.data.timeline_revision === saved.id;
+      reviewDelivery.textContent = dirty ? tr("Save and review delivery", "Salvar e revisar entrega") :
+        tr("Review delivery", "Revisar entrega");
+      reviewDelivery.classList.toggle("primary", Boolean(rendered));
+      renderButton.classList.toggle("primary", !rendered);
+    }
   };
   refreshTimelineState();
   const edited = () => {
@@ -2331,7 +2341,11 @@ async function deliveryView() {
   if (target !== projectId) return null;
   const matching = plan?.revision && assembly?.fresh && assembly.data.timeline_revision === plan.revision;
   const final = matching && !assembly.data.watermark;
-  const delivered = final && exported?.fresh && exported.data.timeline_revision === plan.revision;
+  const approvedExport = exported?.url && exported.fresh && ready(assembly) && !assembly.data.watermark &&
+    exported.dependencies.some(dependency => dependency.id === assembly.id);
+  const delivered = final && approvedExport && exported.data.timeline_revision === plan.revision;
+  const legacyExport = !historic && approvedExport &&
+    !exported.data.timeline_revision && !assembly.data.timeline_revision;
   const player = assemblyPlayer(assembly);
   const timestamp = query.get("t");
   const marked = linked && annotation?.notes.find(note => note.id === query.get("note"));
@@ -2356,20 +2370,30 @@ async function deliveryView() {
     matching && small(tr("Saved cut v", "Corte salvo v") + plan.seq),
     previous && small(tr("Earlier assembly", "Montagem anterior"))),
     node("div", {class: "row review-actions"}, assemblyScenePicker(assembly, player), feedback?.add));
-  const files = (item, currentDelivery) => item && row(
-    node("a", {href: item.url + "?attachment=true"}, currentDelivery ?
-      tr("Download final MP4", "Baixar MP4 final") : tr("Download existing MP4", "Baixar MP4 existente")),
+  const files = (item, title = tr("Download existing MP4", "Baixar MP4 existente")) => item?.url && row(
+    node("a", {href: item.url + "?attachment=true"}, title),
     ...Object.entries(item.data.captions || {}).map(([language, id]) => node("a",
       {href: path("/media/" + id + "?attachment=true")}, language + " · SRT")));
+  const previousDelivery = legacyExport && card(node("h2", {}, tr("Existing export", "Exportação existente")),
+    node("p", {}, tr(
+      "This MP4 came from an approved assembly. Its saved cut was not recorded.",
+      "Este MP4 veio de uma montagem aprovada. O corte de origem não foi registrado.")),
+    files(exported, tr("Download exported MP4", "Baixar MP4 exportado")));
   const editor = button(tr("Open editor", "Abrir editor"), () => navigate("timeline"));
+  const draft = timelineDraft || browserTimelineDrafts(target).current()?.draft;
+  const unsaved = draft && json(draft) !== json(current("timeline")?.data) &&
+    (timelineStored || json(draft) !== timelineInitial);
   const heading = stack(title(tr("Delivery review", "Revisão da entrega"), editor),
+    unsaved && node("p", {role: "status"}, tr(
+      "This review uses the saved cut. Open the editor to save your pending edits.",
+      "A revisão usa o corte salvo. Abra o editor para salvar seus ajustes pendentes.")),
     requested && !linked && node("p", {role: "status"}, tr(
       "This assembly is unavailable in the project.", "A montagem do link está indisponível neste projeto.")));
   if (historic) return stack(title(tr("Review assembly v", "Revisão da montagem v") + assembly.seq,
     node("a", {href: "/?project=" + target + "&view=delivery"}, tr("Current delivery", "Entrega atual"))),
-    preview, files(exported, false), deliveryCosts(cost), feedback?.panel);
-  if (plan.blocked) return stack(heading, preview, card(node("p", {role: "status"}, plan.blocked),
-    files(exported, false)), deliveryCosts(cost), feedback?.panel);
+    preview, files(exported), deliveryCosts(cost), feedback?.panel);
+  if (plan.blocked) return stack(heading, preview, previousDelivery,
+    card(node("p", {role: "status"}, plan.blocked), !legacyExport && files(exported)), deliveryCosts(cost), feedback?.panel);
 
   const materialNames = {scene: ["Storyboard", "Storyboard"], image: ["Reference frame", "Quadro de referência"],
     video: ["Take", "Tomada"], voice: ["Narration", "Narração"], translation: ["Translation", "Tradução"],
@@ -2422,7 +2446,7 @@ async function deliveryView() {
     action = stack(small(tr("Processing on the server", "Processando no servidor")),
       node("progress", {max: 100, value: active.progress, "aria-label": tr("Delivery progress", "Progresso da entrega")}));
   } else if (delivered) {
-    action = files(exported, true);
+    action = files(exported, tr("Download final MP4", "Baixar MP4 final"));
   } else if (matching && assembly.status === "REVISION_REQUESTED") {
     action = stack(node("p", {role: "status"}, tr("Changes requested for this assembly.", "Ajustes solicitados nesta montagem.")),
       button(tr("Edit the cut", "Editar o corte"), () => navigate("timeline"), true));
@@ -2447,8 +2471,9 @@ async function deliveryView() {
   }
   const delivery = card(node("h2", {}, tr("Assembly and export", "Montagem e exportação")),
     small([tr("Cut v", "Corte v") + plan.seq, plan.aspect, plan.resolution + "p", plan.languages.join(", ")].join(" · ")),
-    action, requestRevision, !delivered && files(exported, false));
-  return stack(heading, preview, delivery, deliveryCosts(cost), feedback?.panel, checklist, assembly && revisions("assembly"), jobHistory());
+    action, requestRevision, !delivered && !legacyExport && files(exported));
+  return stack(heading, preview, previousDelivery, delivery, deliveryCosts(cost), feedback?.panel,
+    checklist, assembly && revisions("assembly"), jobHistory());
 }
 
 async function youtubeChannelView() {
@@ -3429,8 +3454,8 @@ function render() {
   const globalPages = ["projects", "catalog", "channel", "providers"];
   const pages = project ? Object.keys(navLabels) : globalPages;
   if (!pages.includes(page)) page = "projects";
-  const viewLabel = page === "timeline" ? tr("Edit and review", "Editar e revisar") : tr(...navLabels[page]);
-  document.title = [viewLabel, project?.data.title, "Hyphotenic"].filter(Boolean).join(" · ");
+  const sectionLabel = name => name === "timeline" ? tr("Edit and review", "Editar e revisar") : tr(...navLabels[name]);
+  document.title = [sectionLabel(page), project?.data.title, "Hyphotenic"].filter(Boolean).join(" · ");
   const url = new URL(location.href);
   if (project) url.searchParams.set("project", project.id);
   else url.searchParams.delete("project");
@@ -3448,25 +3473,26 @@ function render() {
     ui("utilities").prepend(switcher);
     ui("utilities").append(button(tr("Refresh project", "Atualizar projeto"), refresh));
   }
-  const nav = (name, label = navLabels[name]) => node("button", {type: "button",
-    "aria-current": name === page ? "page" : null, onclick: () => navigate(name)}, tr(...label));
-  const group = ([en, pt, views]) => node("details", {class: "nav-group", open: views.includes(page)},
-    node("summary", {}, tr(en, pt)), node("div", {class: "nav-links"}, views.map(name => nav(name))));
-  const menu = project ? [
-    nav("dashboard", ["Project overview", "Visão geral"]),
-    ...projectNavigation.slice(0, 2).map(group),
-    nav("timeline", ["Edit and review", "Editar e revisar"]),
-    ...projectNavigation.slice(2).map(group),
-    ...globalPages.slice(0, 3).map(name => nav(name)),
-  ] : globalPages.map(name => nav(name));
-  // A select keeps the complete navigation reachable on narrow screens without
-  // moving the project or the player out of the first screen.
-  const mobile = select(pages.map(name => [name, tr(...(name === "timeline" ?
-    ["Edit and review", "Editar e revisar"] : navLabels[name]))]), page);
-  mobile.setAttribute("aria-label", tr("Workspace section", "Seção do estúdio"));
+  const nav = name => node("button", {type: "button",
+    "aria-current": name === page ? "page" : null, onclick: () => navigate(name)}, sectionLabel(name));
+  const menu = project ? ["dashboard", ...projectNavigation.slice(0, 2), "timeline", "delivery",
+    ...projectNavigation.slice(2), ...globalPages.slice(0, 3)] : globalPages;
+  const option = name => node("option", {value: name}, sectionLabel(name));
+  const desktop = menu.map(item => {
+    if (typeof item === "string") return nav(item);
+    const [en, pt, views] = item;
+    return node("details", {class: "nav-group", open: views.includes(page)},
+      node("summary", {}, tr(en, pt)), node("div", {class: "nav-links"}, views.map(nav)));
+  });
+  const mobile = node("select", {"aria-label": tr("Workspace section", "Seção do estúdio")}, menu.map(item => {
+    if (typeof item === "string") return option(item);
+    const [en, pt, views] = item;
+    return node("optgroup", {label: tr(en, pt)}, views.map(option));
+  }));
+  mobile.value = page;
   mobile.addEventListener("change", () => navigate(mobile.value));
   ui("navigation").setAttribute("aria-label", tr("Studio", "Estúdio"));
-  ui("navigation").replaceChildren(node("div", {class: "nav-desktop"}, menu),
+  ui("navigation").replaceChildren(node("div", {class: "nav-desktop"}, desktop),
     node("div", {class: "nav-mobile"}, mobile));
   const asyncViews = {projects: projectsView, providers: providersView, catalog: catalogView, proposals: proposalsView,
     delivery: deliveryView, analysis: experimentsView, channel: youtubeChannelView, youtube: youtubeView};
