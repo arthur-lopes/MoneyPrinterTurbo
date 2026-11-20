@@ -2870,6 +2870,56 @@ async function proposalsView() {
   proposals.sort((a, b) => Number(b.id === requested) - Number(a.id === requested));
   const fields = {video: ["Take", "Tomada"], trim: ["Trim start", "Corte inicial"],
     seconds: ["Duration", "Duração"], captions: ["Captions", "Legendas"]};
+  function proposalPreview(proposal) {
+    const languages = current("timeline").data.languages;
+    const preferred = locale === "pt" ? "pt-BR" : "en-US";
+    const names = new Intl.DisplayNames([preferred], {type: "language"});
+    const language = select(languages.map(code => [code, names.of(code)]),
+      languages.includes(preferred) ? preferred : languages[0]);
+    const playerHost = node("div", {class: "preview-stage"});
+    const details = node("details", {name: "proposal-previews"},
+      node("summary", {}, tr("Preview proposed cut", "Assistir ao corte proposto")),
+      stack(languages.length > 1 && label(tr("Preview language", "Idioma da prévia"), language), playerHost));
+    let player;
+    function closePreview() {
+      if (player && activeScenePreview === player) {
+        player.dispose();
+        activeScenePreview = null;
+      }
+      player = null;
+      playerHost.replaceChildren();
+    }
+    async function loadPreview() {
+      closePreview();
+      activeScenePreview?.dispose();
+      const requestedPlayer = createScenePreview(() => {});
+      player = activeScenePreview = requestedPlayer;
+      playerHost.append(player.element);
+      player.updating();
+      const isOpen = () => details.isConnected && details.open && activeScenePreview === requestedPlayer;
+      try {
+        const plan = await api(endpoint + "/" + proposal.id + "/preview?language=" + encodeURIComponent(language.value));
+        if (isOpen()) {
+          const changed = new Set(proposal.plan.diff.map(item => item.scene));
+          requestedPlayer.apply(plan, plan.clips.find(clip => changed.has(clip.scene))?.scene);
+        }
+      } catch (error) {
+        if (isOpen()) {
+          requestedPlayer.error(error.status === 409 ?
+            tr("The cut or its assets changed. Ask for a new proposal before reviewing it.",
+              "O corte ou seus materiais mudaram. Peça uma nova proposta para revisar.") :
+            tr("Could not load the preview. Close and reopen it to try again.",
+              "Não foi possível carregar a prévia. Feche e reabra para tentar novamente."));
+        }
+      }
+    }
+    language.addEventListener("change", loadPreview);
+    details.addEventListener("toggle", () => {
+      if (!details.isConnected || !details.open) closePreview();
+      else loadPreview();
+    });
+    return details;
+  }
   const describe = (field, change, side) => {
     const value = change[side];
     if (field === "captions") return Object.entries(change.resolved?.[side] || value || {})
@@ -2933,6 +2983,7 @@ async function proposalsView() {
               node("p", {}, describe(field, change, side))))))))),
       stale && node("p", {role: "status"}, tr("The saved cut changed. Request a proposal based on the latest revision.",
         "O corte salvo mudou. Peça uma proposta baseada na revisão atual.")),
+      pending && !stale && proposalPreview(proposal),
       pending && row(button(tr("Apply proposal", "Aplicar proposta"), () => decide(proposal, "apply"), true, stale),
         button(tr("Reject", "Rejeitar"), () => decide(proposal, "reject"))),
       proposal.decided_by && small(proposal.decided_by + " · " + new Date(proposal.decided * 1000).toLocaleString()),

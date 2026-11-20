@@ -1416,6 +1416,35 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     )
     assert owner.get(p + "/timeline").json()["id"] == timeline["id"]
     decision = p + f"/proposals/{proposal['id']}/decision"
+    preview_url = p + f"/proposals/{proposal['id']}/preview?language=en-US"
+    preview = owner.get(preview_url).raise_for_status().json()
+    cut_preview = owner.post(
+        p + "/timeline/cut-preview",
+        json={"timeline": check.json()["timeline"], "language": "en-US"},
+    )
+    assert preview == cut_preview.raise_for_status().json()
+    assert preview["clips"][0]["take"] == p + "/media/" + alternate["id"]
+    assert preview["clips"][0]["trim"] == 0.1
+    assert preview["clips"][0]["cues"][0]["text"] == "The revised subtitle."
+    assert preview["clips"][1]["start"] == 3
+    assert owner.get(preview_url.replace("en-US", "pt-BR")).status_code == 422
+    assert owner.get(p + f"/proposals/{proposal['id']}").json() == proposal
+    assert owner.get(p + "/timeline").json()["id"] == timeline["id"]
+    assert len(store.snapshot(actor, pid)["jobs"]) == len(previous["jobs"])
+    assert studio.get(preview_url, headers=bearer).status_code == 401
+    wrong_owner = owner.get(
+        preview_url, headers={"Authorization": "Bearer " + "b" * 32}
+    )
+    assert wrong_owner.status_code == 404
+    assert owner.get(preview_url.replace(pid, second_project)).status_code == 404
+    submit_independent = studio.post(
+        agent_url + "/proposals",
+        json=dict(unlinked_plan, request_id=uuid4().hex),
+        headers=bearer,
+    )
+    independent = submit_independent.raise_for_status().json()
+    independent_preview = p + f"/proposals/{independent['id']}/preview?language=en-US"
+    assert owner.get(independent_preview).raise_for_status().json() == preview
     assert (
         studio.post(
             decision, json={"decision": "apply"}, headers={**bearer, "Origin": origin}
@@ -1443,6 +1472,10 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     outdated = studio.post(validate_url, json=plan, headers=bearer)
     assert outdated.status_code == 409
     assert "assembly's inputs changed" in outdated.json()["detail"]
+    assert owner.get(preview_url).status_code == 409
+    drifted = owner.get(independent_preview)
+    assert drifted.status_code == 409
+    assert "Proposal inputs changed" in drifted.json()["detail"]
     stale = dict(request, request_id=uuid4().hex)
     assert (
         studio.post(agent_url + "/proposals", json=stale, headers=bearer).status_code
@@ -1473,6 +1506,8 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     updated = owner.get(p + "/timeline").json()
     assert updated["id"] == applied["applied_revision"]
     assert updated["data"] == check.json()["timeline"]
+    assert "base revision changed" in owner.get(independent_preview).json()["detail"]
+    assert owner.get(preview_url).status_code == 409
     assert len(store.snapshot(actor, pid)["jobs"]) == len(previous["jobs"])
     assert (
         studio.get(agent_url + "/proposals/" + proposal["id"], headers=bearer).json()[

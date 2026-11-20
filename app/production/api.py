@@ -837,6 +837,12 @@ def create_app(
     def review_proposal(pid: m.Id, proposal: m.Id, actor=Depends(authenticated)):
         return project_agents.proposals(actor, pid, proposal)
 
+    @app.get("/api/projects/{pid}/proposals/{proposal}/preview")
+    def preview_proposal(
+        pid: m.Id, proposal: m.Id, language: m.Language, actor=Depends(authenticated)
+    ):
+        return project_agents.preview(actor, pid, proposal, language)
+
     @app.post("/api/projects/{pid}/proposals/{proposal}/decision")
     def decide_proposal(
         pid: m.Id, proposal: m.Id, body: agent.Decision, actor=Depends(authenticated)

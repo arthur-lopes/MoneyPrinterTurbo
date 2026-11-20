@@ -320,44 +320,45 @@ class Workbench(Store):
         }
 
     def preview_cut(self, actor, pid, request):
-        timeline = request.timeline
-        language = request.language
         with self.transaction(write=False) as db:
             project = self.project(db, actor, pid)["data"]
-            self._timeline_order(db, pid, project, timeline)
-            if language not in timeline.languages:
-                raise RuleError("Select a language included in the cut", 422)
-            # Verify the materials used by the selected language, independently of
-            # the other languages that still need work before assembly or export.
-            single = timeline.model_copy(update={"languages": [language]})
-            clips = []
-            position = 0.0
-            for clip in timeline.clips:
-                entry, scene, video, voices = self._timeline_clip(
-                    db, pid, single, clip, []
-                )
-                clips.append(
-                    dict(
-                        self._preview_take(
-                            entry, video, voices[language], language, timeline.subtitles
-                        ),
-                        scene=clip.scene,
-                        title=scene["data"]["title"],
-                        start=position,
-                        effect=f"/api/projects/{pid}/media/{clip.effect}"
-                        if clip.effect
-                        else None,
-                        fade=fade_duration(entry["seconds"])
-                        if clip.transition == "fade"
-                        else 0,
-                    )
-                )
-                position += entry["seconds"]
-            music = (
-                self._attachment(db, pid, timeline.music, "audio")
-                if timeline.music
-                else None
+            return self._cut_preview(
+                db, pid, project, request.timeline, request.language
             )
+
+    def _cut_preview(self, db, pid, project, timeline, language):
+        self._timeline_order(db, pid, project, timeline)
+        if language not in timeline.languages:
+            raise RuleError("Select a language included in the cut", 422)
+        # Verify the materials used by the selected language, independently of
+        # the other languages that still need work before assembly or export.
+        single = timeline.model_copy(update={"languages": [language]})
+        clips = []
+        position = 0.0
+        for clip in timeline.clips:
+            entry, scene, video, voices = self._timeline_clip(db, pid, single, clip, [])
+            clips.append(
+                dict(
+                    self._preview_take(
+                        entry, video, voices[language], language, timeline.subtitles
+                    ),
+                    scene=clip.scene,
+                    title=scene["data"]["title"],
+                    start=position,
+                    effect=f"/api/projects/{pid}/media/{clip.effect}"
+                    if clip.effect
+                    else None,
+                    fade=fade_duration(entry["seconds"])
+                    if clip.transition == "fade"
+                    else 0,
+                )
+            )
+            position += entry["seconds"]
+        music = (
+            self._attachment(db, pid, timeline.music, "audio")
+            if timeline.music
+            else None
+        )
         return {
             "clips": clips,
             "seconds": position,

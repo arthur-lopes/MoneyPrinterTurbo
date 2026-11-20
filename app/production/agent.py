@@ -397,6 +397,31 @@ class AgentProjects:
             result["plan"].pop("timeline")
         return result
 
+    def _checked_plan(self, db, project, proposal):
+        plan, fingerprint = self._plan(
+            db, project, Proposal.model_validate(proposal["request"])
+        )
+        if fingerprint != proposal["fingerprint"]:
+            raise RuleError(
+                "Proposal inputs changed. Ask the agent to review the current cut."
+            )
+        return plan
+
+    def preview(self, actor, pid, ident, language):
+        with self.store.transaction(write=False) as db:
+            project = self.store.project(db, actor, pid)
+            proposal = self._proposal(db, pid, ident)
+            if proposal["status"] != "PENDING":
+                raise RuleError("This proposal already has a decision")
+            plan = self._checked_plan(db, project, proposal)
+            return self.store._cut_preview(
+                db,
+                pid,
+                project["data"],
+                m.Timeline.model_validate(plan["timeline"]),
+                language,
+            )
+
     def decide(self, actor, pid, ident, decision):
         with self.store.transaction() as db:
             project = self.store.project(db, actor, pid)
@@ -408,13 +433,7 @@ class AgentProjects:
                 raise RuleError("This proposal already has a decision")
             applied_revision = None
             if status == "APPLIED":
-                plan, fingerprint = self._plan(
-                    db, project, Proposal.model_validate(proposal["request"])
-                )
-                if fingerprint != proposal["fingerprint"]:
-                    raise RuleError(
-                        "Proposal inputs changed. Ask the agent to review the current cut."
-                    )
+                plan = self._checked_plan(db, project, proposal)
                 applied_revision = self.store.add(
                     db, pid, "timeline", "timeline", plan["timeline"]
                 )["id"]
