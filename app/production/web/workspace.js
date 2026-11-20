@@ -905,24 +905,21 @@ function evidenceGraphicEditor(section) {
 }
 
 function scriptsView() {
-  const item = current("script");
-  const research = current("research");
-  const catalog = research?.data.sources || [];
+  const target = projectId;
+  const endpoint = path("/script");
+  let item = current("script"), research = current("research");
+  let catalog = research?.data.sources || [];
   const identity = source => JSON.stringify([source.title, source.url, source.excerpt]);
-  const citationKeys = catalog.map(identity);
   const fallback = [{key: "hook", title: tr("Opening hook", "Abertura"), seconds: 5,
     narration: project.data.topic, category: "uncertain", sources: []}];
   let sections;
   const sourceReview = new Set();
   const reviewBox = stack(reviewControls(item));
-  function load(version) {
-    sourceReview.clear();
-    const original = project.versions.find(asset => asset.kind === "research" &&
-      version?.dependencies.some(dep => dep.id === asset.id));
-    sections = structuredClone(version?.data.sections || fallback);
+  function rebind(previous) {
+    const citationKeys = catalog.map(identity);
     for (const section of sections) {
       section.sources = section.sources.flatMap(number => {
-        const prior = original?.data.sources?.[number - 1];
+        const prior = previous[number - 1];
         const key = prior && identity(prior);
         const index = key ? (citationKeys[number - 1] === key ? number - 1 : citationKeys.indexOf(key)) : -1;
         if (index >= 0) return [index + 1];
@@ -931,6 +928,13 @@ function scriptsView() {
       });
     }
   }
+  function load(version) {
+    sourceReview.clear();
+    const original = project.versions.find(asset => asset.kind === "research" &&
+      version?.dependencies.some(dep => dep.id === asset.id));
+    sections = structuredClone(version?.data.sections || fallback);
+    rebind(original?.data.sources || []);
+  }
   load(item);
   const updateApproval = () => {
     reviewBox.hidden = sourceReview.size > 0 || json(item?.data.sections) !== json(sections);
@@ -938,6 +942,55 @@ function scriptsView() {
   const provider = select([["local", tr("Local outline", "Estrutura local")], codexOption(), apiOption], project.data.defaults?.script || "local");
   const instructions = area("", {placeholder: tr("Variation or revision instructions", "Instruções para variação ou revisão")});
   const form = stack();
+  const recovery = stack();
+  recovery.hidden = true;
+  const active = () => form.isConnected && projectId === target && page === "scripts";
+  const linkTo = (view, text) => node("a", {
+    href: "/?project=" + target + "&view=" + view, target: "_blank", rel: "noopener noreferrer",
+  }, text);
+
+  function showRecovery(message, ...controls) {
+    const notice = node("p", {role: "status", tabindex: -1}, message);
+    recovery.replaceChildren(notice, controls.length ? row(controls) : null);
+    recovery.hidden = false;
+    editing = true;
+    notice.focus();
+  }
+
+  function scriptConflict() {
+    reviewBox.replaceChildren();
+    showRecovery(tr("Another session saved a new script. Your edits are still here.",
+      "Outra sessão salvou um novo roteiro. Seus ajustes continuam neste formulário."),
+      linkTo("scripts", tr("Open saved script in a new tab", "Abrir roteiro salvo em nova aba")));
+  }
+
+  async function updateSources() {
+    const latest = await api("/api/projects/" + target);
+    if (!active()) return;
+    const latestScript = latest.versions.find(version => version.current && version.slot === "script");
+    if (latestScript?.id !== item?.id) {
+      scriptConflict();
+      return;
+    }
+    const next = latest.versions.find(version => version.current && version.slot === "research");
+    if (!ready(next)) {
+      showRecovery(tr("Review and approve the current research, then update the sources here.",
+        "Revise e aprove a pesquisa atual, depois atualize as fontes aqui."),
+        linkTo("research", tr("Open research in a new tab", "Abrir pesquisa em nova aba")), updateSourcesButton);
+      return;
+    }
+    const previous = catalog;
+    project = latest;
+    research = next;
+    catalog = next.data.sources;
+    rebind(previous);
+    fields();
+    showRecovery(sourceReview.size ? tr("Your text was kept. Review the sources in the marked sections.",
+      "Seu texto foi mantido. Revise as fontes das seções sinalizadas.") :
+      tr("Sources updated. Your text is ready to save.", "Fontes atualizadas. Seu texto está pronto para salvar."));
+  }
+
+  const updateSourcesButton = button(tr("Update sources and keep text", "Atualizar fontes e manter texto"), updateSources, true);
   form.addEventListener("input", updateApproval);
   form.addEventListener("change", updateApproval);
   function fields() {
@@ -994,7 +1047,7 @@ function scriptsView() {
         quote([{operation: "script", provider: provider.value, instructions: instructions.value}])),
       item && button(tr("Estimate AI revision", "Estimar revisão por IA"), () =>
         quote([{operation: "script", provider: provider.value, instructions: instructions.value, version: item.id}])))),
-    form, row(button(tr("Add section", "Adicionar seção"), () => {
+    recovery, form, row(button(tr("Add section", "Adicionar seção"), () => {
       sections.push({...fallback[0], key: crypto.randomUUID()});
       fields();
       editing = true;
@@ -1005,9 +1058,32 @@ function scriptsView() {
       if (sections.some(section => section.category === "verified" && !section.sources.length)) {
         throw new Error(tr("Link a source to each verified section.", "Vincule uma fonte a cada seção verificada."));
       }
-      await api(path("/script"), "POST", {sections}, research ? {"X-Research-Revision": research.id} : {});
-      await refresh();
-      notify(tr("Script revision saved.", "Revisão do roteiro salva."));
+      const draft = json(sections);
+      const headers = item ? {"If-Match": '"' + item.id + '"'} : {"If-None-Match": "*"};
+      if (research) headers["X-Research-Revision"] = research.id;
+      try {
+        const saved = await api(endpoint, "POST", {sections: JSON.parse(draft)}, headers);
+        if (!active()) return;
+        item = saved;
+        await refresh(false);
+        if (!active()) return;
+        if (json(sections) === draft) {
+          render();
+          notify(tr("Script revision saved.", "Revisão do roteiro salva."));
+        } else {
+          reviewBox.replaceChildren();
+          showRecovery(tr("Revision saved. Your newer edits are still unsaved.",
+            "Revisão salva. As alterações feitas depois continuam no formulário."));
+        }
+      } catch (error) {
+        if (!active()) return;
+        if (error.status === 412) scriptConflict();
+        else if (error.status === 409 && error.message.startsWith("Research changed.")) {
+          reviewBox.replaceChildren();
+          showRecovery(tr("The research changed. You can update sources without replacing your text.",
+            "A pesquisa mudou. Você pode atualizar as fontes e manter seu texto."), updateSourcesButton);
+        } else throw error;
+      }
     }, true),
     item && button(tr("Open storyboard", "Abrir storyboard"), async () => {
       await mutate(path("/storyboard"), "POST");

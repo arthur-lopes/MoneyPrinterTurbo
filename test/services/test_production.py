@@ -238,12 +238,29 @@ def test_scene_evidence_preserves_original_research_and_detects_citation_changes
     )
     assert stale.status_code == 409
     assert head(store, pid, "script")["id"] == latest_script["id"]
-    accepted = client.post(
+    accepted_response = client.post(
         script_url,
         json=payload,
-        headers={**owner, "X-Research-Revision": latest_research["id"]},
-    ).raise_for_status().json()
+        headers={
+            **owner,
+            "X-Research-Revision": latest_research["id"],
+            "If-Match": f'"{latest_script["id"]}"',
+        },
+    ).raise_for_status()
+    accepted = accepted_response.json()
     assert accepted["dependencies"] == [{"id": latest_research["id"]}]
+    assert accepted_response.headers["ETag"] == f'"{accepted["id"]}"'
+    for precondition in (
+        {"If-Match": f'"{latest_script["id"]}"'},
+        {"If-None-Match": "*"},
+    ):
+        conflict = client.post(
+            script_url,
+            json=payload,
+            headers={**owner, "X-Research-Revision": latest_research["id"], **precondition},
+        )
+        assert conflict.status_code == 412
+        assert head(store, pid, "script")["id"] == accepted["id"]
     assert (
         client.delete(
             project_url + "/agent-access/" + grant["id"], headers=owner

@@ -624,17 +624,32 @@ def create_app(
 
     @app.post("/api/projects/{pid}/script")
     def script(
-        pid: m.Id, body: m.Script, request: Request, actor=Depends(authenticated)
+        pid: m.Id,
+        body: m.Script,
+        request: Request,
+        response: Response,
+        actor=Depends(authenticated),
     ):
         with store.transaction() as db:
             store.project(db, actor, pid)
-            research = store.require(db, pid, "research")
+            current = store.head(db, pid, "script")
+            etag = f'"{current["id"]}"' if current else None
+            match = request.headers.get("If-Match")
+            if (match is not None and match != etag) or (
+                request.headers.get("If-None-Match") == "*" and current
+            ):
+                raise RuleError("The saved script changed in another session.", 412)
             revision = request.headers.get("X-Research-Revision")
-            if revision is not None and revision != research["id"]:
-                raise RuleError(
-                    "Research changed. Reload the sources before saving the script."
-                )
-            return store.script(db, pid, body.model_dump(), research)
+            if revision is not None:
+                research_head = store.head(db, pid, "research")
+                if not research_head or research_head["id"] != revision:
+                    raise RuleError(
+                        "Research changed. Reload the sources before saving the script."
+                    )
+            research = store.require(db, pid, "research")
+            item = store.script(db, pid, body.model_dump(), research)
+            response.headers["ETag"] = f'"{item["id"]}"'
+            return item
 
     @app.post("/api/projects/{pid}/storyboard")
     def storyboard(pid: m.Id, actor=Depends(authenticated)):
