@@ -29,7 +29,7 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | PUT /api/projects/{project}/style | Save a project style guide and stale affected storyboard versions. |
 | PUT /api/projects/{project}/defaults | Set preferred project providers for research, script, translation, images, new video scenes, and narration. |
 | POST /api/projects/{project}/research | Save sources and claims. Sources contain title, URL and excerpt. Claims contain text, category and one-based source indices. |
-| POST /api/projects/{project}/script | Save script sections with key, title, narration, seconds, category and source indices. |
+| POST /api/projects/{project}/script | Save script sections with key, title, narration, seconds, category and source indices. Send optional `X-Research-Revision` with the research version used to select sources. Returns 409 if that approved revision is no longer current. |
 | POST /api/projects/{project}/storyboard | Build affected scenes from the current approved script. |
 | PUT /api/projects/{project}/scenes/{scene} | Save a new storyboard scene version. |
 | PUT /api/projects/{project}/order | Reorder active scene IDs using `scenes`. |

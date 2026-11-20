@@ -229,6 +229,21 @@ def test_scene_evidence_preserves_original_research_and_detects_citation_changes
     assert replacement["script_version"] == latest_script["id"]
     assert replacement["research_version"] == latest_research["id"]
     assert replacement["sections"][0]["sources"] == [{"number": 1, **revised}]
+    script_url = project_url + "/script"
+    payload = {"sections": sections}
+    stale = client.post(
+        script_url,
+        json=payload,
+        headers={**owner, "X-Research-Revision": original_research["id"]},
+    )
+    assert stale.status_code == 409
+    assert head(store, pid, "script")["id"] == latest_script["id"]
+    accepted = client.post(
+        script_url,
+        json=payload,
+        headers={**owner, "X-Research-Revision": latest_research["id"]},
+    ).raise_for_status().json()
+    assert accepted["dependencies"] == [{"id": latest_research["id"]}]
     assert (
         client.delete(
             project_url + "/agent-access/" + grant["id"], headers=owner

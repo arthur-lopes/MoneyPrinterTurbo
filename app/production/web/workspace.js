@@ -676,34 +676,151 @@ function dashboard() {
     jobHistory());
 }
 
+function claimCategory(value, changed) {
+  const field = select([["verified", tr("Verified", "Verificado")], ["assumption", tr("Assumption", "Premissa")],
+    ["speculation", tr("Speculation", "Especulação")], ["uncertain", tr("Uncertain", "Incerto")]], value);
+  field.addEventListener("change", () => changed(field.value));
+  return label(tr("Claim category", "Categoria"), field);
+}
+
+function citationPicker(sources, selected, changed) {
+  if (!sources.length) return small(tr("Add sources in Research.", "Cadastre fontes em Pesquisa."));
+  const chosen = new Set(selected);
+  const summary = node("summary");
+  const details = node("details", {}, summary);
+  const updateCount = () => {
+    summary.textContent = tr("Linked sources", "Fontes vinculadas") + " (" + chosen.size + ")";
+  };
+  function open() {
+    if (!details.open) return;
+    details.removeEventListener("toggle", open);
+    const checks = sources.map((source, i) => input("", {type: "checkbox", checked: chosen.has(i + 1)}));
+    const updateLimits = () => checks.forEach(field => { field.disabled = !field.checked && chosen.size >= 20; });
+    const choices = checks.map((field, i) => {
+      const number = i + 1;
+      field.addEventListener("change", () => {
+        if (field.checked) chosen.add(number);
+        else chosen.delete(number);
+        updateCount();
+        updateLimits();
+        changed([...chosen]);
+      });
+      return node("label", {class: "checkbox"}, field, node("span", {}, number + " · " + sources[i].title));
+    });
+    updateLimits();
+    details.append(node("div", {class: "stack citation-options"}, choices));
+  }
+  updateCount();
+  details.addEventListener("toggle", open);
+  return details;
+}
+
 function researchView() {
   const item = current("research");
-  const sources = area(json(item?.data.sources || []));
-  const claims = area(json(item?.data.claims || []));
-  const provider = select([["local", tr("Local worksheet", "Ficha local")], codexOption(), apiOption], project.data.defaults?.research || "local");
-  const name = input();
-  const url = input("", {type: "url"});
-  const excerpt = area();
+  const initial = {sources: item?.data.sources || [], claims: item?.data.claims || []};
+  const {sources, claims} = structuredClone(initial);
+  const provider = select([["local", tr("Local worksheet", "Ficha local")], codexOption(), apiOption],
+    project.data.defaults?.research || "local");
   const checklist = project.data.profile?.research_checklist;
+  const sourceList = stack(), claimList = stack();
+  const reviewBox = stack(reviewControls(item));
+  const state = node("small", {role: "status"});
+  const updateStatus = () => {
+    const dirty = json(initial) !== json({sources, claims});
+    state.textContent = dirty ? tr("Research has unsaved changes.", "A pesquisa tem alterações não salvas.") : "";
+    reviewBox.hidden = dirty;
+    if (dirty) editing = true;
+  };
+  const save = button(tr("Save research revision", "Salvar revisão da pesquisa"), async () => {
+    for (const claim of claims) {
+      if (!claim.text.trim()) throw new Error(tr("Enter the text of each claim.", "Informe o texto de cada afirmação."));
+      if (claim.category === "verified" && !claim.sources.length) {
+        throw new Error(tr("Link a source to each verified claim.", "Vincule uma fonte a cada afirmação verificada."));
+      }
+    }
+    await mutate(path("/research"), "POST", {sources, claims});
+    notify(tr("Research revision saved.", "Revisão da pesquisa salva."));
+  }, true);
+
+  function sourceForm(index) {
+    if (index === sources.length && sources.length >= 30) {
+      throw new Error(tr("A research revision supports up to 30 sources.", "Uma revisão de pesquisa aceita até 30 fontes."));
+    }
+    const existing = sources[index];
+    const name = input(existing?.title || "", {maxlength: 200, required: true});
+    const url = input(existing?.url || "", {type: "url", maxlength: 2000, required: true});
+    const excerpt = area(existing?.excerpt || "", {rows: 4, maxlength: 8000, required: true});
+    const accept = button(tr("Keep source", "Guardar fonte"), () => {
+      let reference;
+      try { reference = new URL(url.value); } catch { /* The field is checked below. */ }
+      if (!name.value.trim() || !excerpt.value.trim() || !url.checkValidity() || !reference ||
+          !["https:", "http:"].includes(reference.protocol) || reference.username || reference.password) {
+        throw new Error(tr("Enter a title, public HTTP(S) URL and excerpt.", "Informe título, URL pública HTTP(S) e trecho."));
+      }
+      sources[index] = {title: name.value.trim(), url: url.value.trim(), excerpt: excerpt.value.trim()};
+      ui("dialog").close();
+      redraw();
+      sourceList.children[index]?.querySelector("button")?.focus();
+    }, true);
+    modal(existing ? tr("Edit source", "Editar fonte") : tr("Add source", "Adicionar fonte"),
+      stack(label(tr("Source title", "Título da fonte"), name), label(tr("Reference URL", "URL da fonte"), url),
+        label(tr("Verified excerpt or notes", "Trecho verificado ou anotações"), excerpt)), [accept]);
+  }
+
+  function redraw() {
+    sourceList.replaceChildren(...sources.map((source, i) => {
+      const number = i + 1;
+      return card(node("h3", {}, number + " · " + source.title),
+        node("details", {}, node("summary", {}, tr("Excerpt and link", "Trecho e link")),
+          node("a", {href: source.url, target: "_blank", rel: "noopener noreferrer"}, tr("Open source", "Abrir fonte")),
+          node("p", {class: "review-note-text"}, source.excerpt)),
+        row(button(tr("Edit source", "Editar fonte"), () => sourceForm(i)),
+          button(tr("Remove source", "Remover fonte"), () => {
+            if (claims.some(claim => claim.sources.includes(number))) {
+              throw new Error(tr("Unlink this source from its claims before removing it.",
+                "Desvincule a fonte das afirmações antes de removê-la."));
+            }
+            sources.splice(i, 1);
+            claims.forEach(claim => {
+              claim.sources = claim.sources.map(ref => ref > number ? ref - 1 : ref);
+            });
+            redraw();
+            addSource.focus();
+          })));
+    }));
+    claimList.replaceChildren(...claims.map((claim, i) => card(
+      label(tr("Claim text", "Texto da afirmação"), area(claim.text, {rows: 3, maxlength: 8000,
+        oninput: e => { claim.text = e.target.value; updateStatus(); }})),
+      claimCategory(claim.category, value => { claim.category = value; updateStatus(); }),
+      citationPicker(sources, claim.sources, selected => { claim.sources = selected; updateStatus(); }),
+      button(tr("Remove claim", "Remover afirmação"), () => {
+        claims.splice(i, 1);
+        redraw();
+        addClaim.focus();
+      }))));
+    updateStatus();
+  }
+
+  const addSource = button(tr("Add source", "Adicionar fonte"), () => sourceForm(sources.length));
+  const addClaim = button(tr("Add claim", "Adicionar afirmação"), () => {
+    if (claims.length >= 60) {
+      throw new Error(tr("A research revision supports up to 60 claims.", "Uma revisão de pesquisa aceita até 60 afirmações."));
+    }
+    claims.push({text: "", category: "uncertain", sources: []});
+    redraw();
+    claimList.lastElementChild.querySelector("textarea").focus();
+  });
+  redraw();
   return stack(title(tr("Research", "Pesquisa"), assetBadge(item)),
-    checklist && node("ul", {}, checklist.map(entry => node("li", {}, entry))), grid(
-    card(node("h2", {}, tr("Source material", "Material de referência")),
-      label(tr("Source title", "Título da fonte"), name), label(tr("Reference URL", "URL da fonte"), url),
-      label(tr("Verified excerpt or notes", "Trecho verificado ou anotações"), excerpt),
-      button(tr("Add source", "Adicionar fonte"), () => {
-        if (!name.value || !url.value || !url.checkValidity() || !excerpt.value) {
-          throw new Error(tr("Enter a title, URL and excerpt", "Informe título, URL e trecho"));
-        }
-        sources.value = json([...parse(sources), {title: name.value, url: url.value, excerpt: excerpt.value}]);
-        name.value = url.value = excerpt.value = "";
-      }), label(tr("Sources", "Fontes"), sources), label(tr("Research provider", "Provedor de pesquisa"), provider),
-      button(tr("Estimate research", "Estimar pesquisa"), () => quote([{operation: "research", provider: provider.value, sources: parse(sources)}]))),
-    card(node("h2", {}, tr("Research claims", "Afirmações da pesquisa")),
-      small(tr("Each claim has text, category and source indices. Verify the source supports the claim before approval.",
-        "Cada afirmação tem texto, categoria e índices de fontes. Confirme que a fonte sustenta a afirmação antes de aprovar.")),
-      label(tr("Claims", "Afirmações"), claims), button(tr("Save research revision", "Salvar revisão da pesquisa"),
-        () => mutate(path("/research"), "POST", {sources: parse(sources), claims: parse(claims)}), true),
-      reviewControls(item), revisions("research"))));
+    checklist && node("ul", {}, checklist.map(entry => node("li", {}, entry))),
+    grid(card(node("h2", {}, tr("Sources", "Fontes")), sourceList, addSource),
+      card(node("h2", {}, tr("Research claims", "Afirmações da pesquisa")), claimList, addClaim)),
+    row(save, state), reviewBox,
+    node("details", {}, node("summary", {}, tr("Generate a research draft", "Gerar rascunho de pesquisa")),
+      stack(label(tr("Research provider", "Provedor de pesquisa"), provider),
+        button(tr("Estimate research", "Estimar pesquisa"), () =>
+          quote([{operation: "research", provider: provider.value, sources}])))),
+    revisions("research"));
 }
 
 const motionKinds = {
@@ -789,36 +906,79 @@ function evidenceGraphicEditor(section) {
 
 function scriptsView() {
   const item = current("script");
+  const research = current("research");
+  const catalog = research?.data.sources || [];
+  const identity = source => JSON.stringify([source.title, source.url, source.excerpt]);
+  const citationKeys = catalog.map(identity);
   const fallback = [{key: "hook", title: tr("Opening hook", "Abertura"), seconds: 5,
     narration: project.data.topic, category: "uncertain", sources: []}];
-  const sections = (item?.data.sections || fallback).map(s => ({...s}));
+  let sections;
+  const sourceReview = new Set();
+  const reviewBox = stack(reviewControls(item));
+  function load(version) {
+    sourceReview.clear();
+    const original = project.versions.find(asset => asset.kind === "research" &&
+      version?.dependencies.some(dep => dep.id === asset.id));
+    sections = structuredClone(version?.data.sections || fallback);
+    for (const section of sections) {
+      section.sources = section.sources.flatMap(number => {
+        const prior = original?.data.sources?.[number - 1];
+        const key = prior && identity(prior);
+        const index = key ? (citationKeys[number - 1] === key ? number - 1 : citationKeys.indexOf(key)) : -1;
+        if (index >= 0) return [index + 1];
+        sourceReview.add(section.key);
+        return [];
+      });
+    }
+  }
+  load(item);
+  const updateApproval = () => {
+    reviewBox.hidden = sourceReview.size > 0 || json(item?.data.sections) !== json(sections);
+  };
   const provider = select([["local", tr("Local outline", "Estrutura local")], codexOption(), apiOption], project.data.defaults?.script || "local");
   const instructions = area("", {placeholder: tr("Variation or revision instructions", "Instruções para variação ou revisão")});
   const form = stack();
+  form.addEventListener("input", updateApproval);
+  form.addEventListener("change", updateApproval);
   function fields() {
     form.replaceChildren(...sections.map((section, i) => {
       const name = input(section.title, {oninput: e => section.title = e.target.value});
       const words = area(section.narration, {oninput: e => section.narration = e.target.value});
       const seconds = input(section.seconds, {type: "number", min: ".1", max: 120, step: ".1",
         oninput: e => section.seconds = Number(e.target.value)});
-      const category = select([["verified", tr("Verified", "Verificado")], ["assumption", tr("Assumption", "Premissa")],
-        ["speculation", tr("Speculation", "Especulação")], ["uncertain", tr("Uncertain", "Incerto")]], section.category);
-      category.addEventListener("change", () => section.category = category.value);
-      const refs = input(section.sources.join(", "), {oninput: e => section.sources = e.target.value.split(",").filter(v => v.trim()).map(Number)});
+      const category = claimCategory(section.category, value => section.category = value);
+      const citations = citationPicker(catalog, section.sources, selected => { section.sources = selected; });
+      const confirm = sourceReview.has(section.key) && stack(
+        node("p", {role: "status"}, tr("Some previous citations changed. Review this section's sources.",
+          "Algumas fontes da versão anterior mudaram. Revise os vínculos desta seção.")),
+        row(button(tr("Confirm sources for this section", "Confirmar fontes desta seção"), () => {
+          if (section.category === "verified" && !section.sources.length) {
+            throw new Error(tr("Link a source to this verified section.", "Vincule uma fonte a esta seção verificada."));
+          }
+          sourceReview.delete(section.key);
+          confirm.hidden = true;
+          (citations.querySelector("summary") || category.querySelector("select")).focus();
+          updateApproval();
+        })));
       const visual = input(section.visual_beat || "", {maxlength: 240, oninput: e => {
         if (e.target.value.trim()) section.visual_beat = e.target.value;
         else delete section.visual_beat;
       }});
       const motion = motionCueEditor(section.motion_cues, cues => { section.motion_cues = cues; });
       return card(label(tr("Section title", "Título da seção"), name), label(tr("Narration", "Narração"), words),
-        row(label(tr("Seconds", "Segundos"), seconds), label(tr("Claim category", "Categoria"), category),
-          label(tr("Source numbers", "Números das fontes"), refs)),
+        row(label(tr("Seconds", "Segundos"), seconds), category), citations, confirm,
         label(tr("Visual beat", "Mudança visual"), visual),
         evidenceGraphicEditor(section),
         node("details", {open: Boolean(section.motion_cues?.length)},
           node("summary", {}, tr("Editorial motion", "Intervenções de movimento")), motion.element),
-        button(tr("Remove section", "Remover seção"), () => { sections.splice(i, 1); fields(); }, false, sections.length === 1));
+        button(tr("Remove section", "Remover seção"), () => {
+          sourceReview.delete(section.key);
+          sections.splice(i, 1);
+          editing = true;
+          fields();
+        }, false, sections.length === 1));
     }));
+    updateApproval();
   }
   fields();
   const permanent = project.data.profile?.script_instructions;
@@ -837,15 +997,31 @@ function scriptsView() {
     form, row(button(tr("Add section", "Adicionar seção"), () => {
       sections.push({...fallback[0], key: crypto.randomUUID()});
       fields();
-    }), button(tr("Save script revision", "Salvar revisão do roteiro"), () => mutate(path("/script"), "POST", {sections}), true),
+      editing = true;
+      form.lastElementChild.querySelector("input").focus();
+    }), button(tr("Save script revision", "Salvar revisão do roteiro"), async () => {
+      if (sourceReview.size) throw new Error(tr("Confirm the sources for the marked sections before saving.",
+        "Confirme as fontes das seções sinalizadas antes de salvar."));
+      if (sections.some(section => section.category === "verified" && !section.sources.length)) {
+        throw new Error(tr("Link a source to each verified section.", "Vincule uma fonte a cada seção verificada."));
+      }
+      await api(path("/script"), "POST", {sections}, research ? {"X-Research-Revision": research.id} : {});
+      await refresh();
+      notify(tr("Script revision saved.", "Revisão do roteiro salva."));
+    }, true),
     item && button(tr("Open storyboard", "Abrir storyboard"), async () => {
       await mutate(path("/storyboard"), "POST");
       page = "storyboard";
       render();
-    }, false, !ready(item))), reviewControls(item), revisions("script"),
-    item && node("details", {}, node("summary", {}, tr("Restore previous wording", "Restaurar texto anterior")),
+    }, false, !ready(item))), reviewBox, revisions("script"),
+    item && node("details", {}, node("summary", {}, tr("Load earlier text for review", "Carregar texto anterior para revisar")),
       row(...project.versions.filter(v => v.kind === "script" && !v.current).map(v =>
-        button("v" + v.seq, () => mutate(path("/script"), "POST", v.data))))));
+        button("v" + v.seq, () => {
+          load(v);
+          fields();
+          editing = true;
+          form.querySelector("input").focus();
+        })))));
 }
 
 const sceneFields = {

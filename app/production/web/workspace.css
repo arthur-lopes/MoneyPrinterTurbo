@@ -68,6 +68,8 @@ progress { accent-color: var(--accent); height: .7rem; width: 100%; }
 label { display: grid; grid-template-columns: minmax(0, 1fr); gap: .3rem; color: var(--muted); }
 label, input, select, textarea { min-width: 0; max-width: 100%; }
 label.checkbox { display: flex; align-items: center; }
+.citation-options > label { min-block-size: 2rem; gap: .55rem; overflow-wrap: anywhere; }
+.citation-options input[type="checkbox"] { inline-size: 24px; block-size: 24px; flex: 0 0 auto; margin: 0; }
 form { display: grid; gap: .72rem; }
 details { min-width: 0; }
 summary { cursor: pointer; padding: .28rem 0; color: var(--accent); }
@@ -141,6 +143,7 @@ dialog::backdrop { background: rgb(0 0 0 / 65%); }
     min-block-size: 44px;
   }
   main summary { padding-block: .65rem; }
+  .citation-options > label { min-block-size: 44px; }
   .review-actions > * { flex-basis: 100%; }
   .editor-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "preview" "sequence" "inspector"; }
   .preview-stage video { max-height: 38vh; }

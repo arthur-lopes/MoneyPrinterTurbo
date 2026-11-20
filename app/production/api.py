@@ -623,12 +623,18 @@ def create_app(
             return store.add(db, pid, "research", "research", body.model_dump())
 
     @app.post("/api/projects/{pid}/script")
-    def script(pid: m.Id, body: m.Script, actor=Depends(authenticated)):
+    def script(
+        pid: m.Id, body: m.Script, request: Request, actor=Depends(authenticated)
+    ):
         with store.transaction() as db:
             store.project(db, actor, pid)
-            return store.script(
-                db, pid, body.model_dump(), store.require(db, pid, "research")
-            )
+            research = store.require(db, pid, "research")
+            revision = request.headers.get("X-Research-Revision")
+            if revision is not None and revision != research["id"]:
+                raise RuleError(
+                    "Research changed. Reload the sources before saving the script."
+                )
+            return store.script(db, pid, body.model_dump(), research)
 
     @app.post("/api/projects/{pid}/storyboard")
     def storyboard(pid: m.Id, actor=Depends(authenticated)):
