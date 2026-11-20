@@ -106,6 +106,8 @@ The owner creates an expiring credential in **Project settings → Agent access*
 | Method and path | Behavior |
 | --- | --- |
 | GET /api/agent/v1/projects/{project} | Read sources, script, saved timeline, scene IDs, eligible takes and the latest preview. |
+| GET /api/agent/v1/projects/{project}/jobs | Read recent project jobs. Use `state=all`, `active`, `attention` (failed or billing review pending), or `completed`, and `limit` from 1 to 50 (default 20). |
+| GET /api/agent/v1/projects/{project}/jobs/{job} | Read a project job and its exact result, with the owner review link. |
 | GET /api/agent/v1/projects/{project}/scenes/{scene}/evidence | Read scene evidence with the project credential. The project context lists this URL for each scene. |
 | GET, HEAD /api/agent/v1/projects/{project}/media/{version} | Read project media with the same project credential. |
 | GET /api/agent/v1/projects/{project}/assemblies/{version}/notes | Read timestamped review notes for an assembly in the granted project, including the rendered scene and its relative timestamp when available. |
@@ -119,9 +121,13 @@ Each agent note returns a `scene` object with `id`, `title`, `start_ms`, `end_ms
 
 Scene evidence includes `scene_version`, `script_version`, `research_version`, `fresh`, and each section's `category` and numbered sources. A `recorded` binding is stored with the scene. A `historical` binding uses matching script sections at the time an older scene was created. An `unavailable` binding returns no source links. The response follows the cited research revision even after a later research revision changes.
 
+The job response includes a relative `owner_url` for opening its card in Costs and a scoped `result.url` when the job produced media. The result identifies its version and whether it is current and fresh. Progress is present for active and completed jobs. Use `next_action` to monitor active jobs (`wait`, `wait_for_slot`) or notify the owner (`resume_provider_task`, `verify_charge`, `review_failure`, `review_result`). A job can also require billing review while another action is pending. Both agent scopes can inspect jobs. Generation, cancellation, provider task recovery and receipts use the owner interface.
+
 ```powershell
 # Set MPT_AGENT_TOKEN in the process environment from the issued credential.
 python -m app.production.agent_cli --project-url $projectApi context
+python -m app.production.agent_cli --project-url $projectApi jobs --state attention
+python -m app.production.agent_cli --project-url $projectApi job $jobId
 python -m app.production.agent_cli --project-url $projectApi evidence $sceneId
 python -m app.production.agent_cli --project-url $projectApi notes $assemblyId
 python -m app.production.agent_cli --project-url $projectApi validate edit.json

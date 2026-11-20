@@ -125,6 +125,7 @@ dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .proposal-value p { margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .job-details { overflow-wrap: anywhere; }
 .job-details h3 { margin: 0; }
+.job-details:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 .editor-inspector { grid-area: inspector; }
 .editor-inspector h2 { margin: 0; overflow-wrap: anywhere; }
 .clip-timing { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }

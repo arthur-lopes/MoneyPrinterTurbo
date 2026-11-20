@@ -859,6 +859,19 @@ def create_app(
     def agent_context(pid: m.Id, digest=Depends(agent_credential)):
         return project_agents.context(pid, digest)
 
+    @app.get("/api/agent/v1/projects/{pid}/jobs")
+    def agent_jobs(
+        pid: m.Id,
+        state: agent.JobView = "all",
+        limit: int = Query(default=20, ge=1, le=50),
+        digest=Depends(agent_credential),
+    ):
+        return project_agents.jobs(pid, digest, state, limit)
+
+    @app.get("/api/agent/v1/projects/{pid}/jobs/{job}")
+    def agent_job(pid: m.Id, job: m.Id, digest=Depends(agent_credential)):
+        return project_agents.job(pid, digest, job)
+
     @app.get("/api/agent/v1/projects/{pid}/scenes/{sid}/evidence")
     def agent_scene_evidence(pid: m.Id, sid: m.Id, digest=Depends(agent_credential)):
         return project_agents.evidence(pid, digest, sid)

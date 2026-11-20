@@ -10,10 +10,19 @@ from uuid import uuid4
 from pydantic import Field, model_validator
 
 from . import models as m, review_notes
-from .store import RuleError, encode, unpack
+from .store import ACTIVE, RuleError, encode, unpack
 
 
 TOKEN = re.compile(r"Bearer hyph_[A-Za-z0-9_-]{43}")
+JobView = Literal["all", "active", "attention", "completed"]
+JOB_FIELDS = """j.id,j.operation,j.slot,j.provider,j.status,j.attempts,j.progress,j.created,
+                j.cancel,j.result,j.remote IS NOT NULL AS has_task,l.uncertain>0 AS verify_charge"""
+JOB_FILTERS = {
+    "all": "1",
+    "active": "j.status IN ('DRAFT','GENERATING')",
+    "attention": "(j.status='FAILED' OR l.uncertain>0)",
+    "completed": "j.status='COMPLETED'",
+}
 
 
 def bearer_digest(header):
@@ -188,6 +197,7 @@ class AgentProjects:
                 "title": project["data"]["title"],
                 "scope": key["scope"],
                 "languages": project["data"]["languages"],
+                "jobs_url": f"/api/agent/v1/projects/{pid}/jobs",
                 "timeline": _version(timeline),
                 "research": _version(research),
                 "script": _version(script),
@@ -201,6 +211,83 @@ class AgentProjects:
                 },
                 "scenes": scenes,
             }
+
+    def jobs(self, pid, digest, state, limit):
+        with self.store.transaction(write=False) as db:
+            self._grant(db, pid, digest)
+            rows = db.execute(
+                f"""SELECT {JOB_FIELDS} FROM jobs j JOIN ledger l ON l.job=j.id
+                    WHERE j.project=? AND {JOB_FILTERS[state]}
+                    ORDER BY j.created DESC,j.ordinal DESC,j.id DESC LIMIT ?""",
+                (pid, limit),
+            )
+            visited = {}
+            return {"jobs": [self._job_status(db, pid, row, visited) for row in rows]}
+
+    def job(self, pid, digest, ident):
+        with self.store.transaction(write=False) as db:
+            self._grant(db, pid, digest)
+            row = db.execute(
+                f"""SELECT {JOB_FIELDS} FROM jobs j JOIN ledger l ON l.job=j.id
+                    WHERE j.project=? AND j.id=?""",
+                (pid, ident),
+            ).fetchone()
+            if not row:
+                raise RuleError("Job not found", 404)
+            return self._job_status(db, pid, row, {})
+
+    def _job_status(self, db, pid, row, visited):
+        state = row["status"]
+        asset = self.store.asset(db, pid, row["result"]) if row["result"] else None
+        result = None
+        next_action = None
+        if state in ACTIVE:
+            next_action = "wait"
+        elif state == "FAILED" and row["provider"] == "runway" and row["has_task"]:
+            job = self.store._job(db, pid, row["id"])
+            if not self.store._current(db, job):
+                next_action = "review_failure"
+            else:
+                next_action = (
+                    "wait_for_slot"
+                    if self.store._slot_has_active_job(db, pid, row["slot"])
+                    else "resume_provider_task"
+                )
+        elif state == "FAILED":
+            next_action = "review_failure"
+        if asset:
+            fresh = self.store.fresh(db, asset, visited)
+            head = self.store.head(db, pid, asset["slot"])
+            current = bool(head and head["id"] == asset["id"])
+            prefix = f"/api/agent/v1/projects/{pid}/media/"
+            result = {
+                "id": asset["id"],
+                "kind": asset["kind"],
+                "status": asset["status"],
+                "fresh": fresh,
+                "current": current,
+                "url": prefix + asset["id"] if asset["media"] else None,
+            }
+            if current and fresh and asset["status"] == "AWAITING_REVIEW":
+                next_action = "review_result"
+        if row["verify_charge"] and next_action in (None, "review_failure"):
+            next_action = "verify_charge"
+        ident = row["id"]
+        return {
+            "id": ident,
+            "operation": row["operation"],
+            "slot": row["slot"],
+            "provider": row["provider"],
+            "status": state,
+            "progress": row["progress"] if state in (*ACTIVE, "COMPLETED") else None,
+            "attempts": row["attempts"],
+            "created": row["created"],
+            "cancellation_requested": bool(row["cancel"] and state in ACTIVE),
+            "billing_review_required": bool(row["verify_charge"]),
+            "next_action": next_action,
+            "result": result,
+            "owner_url": f"/?project={pid}&view=costs&job={ident}",
+        }
 
     def evidence(self, pid, digest, sid):
         with self.store.transaction(write=False) as db:

@@ -11,6 +11,7 @@ let selected = new Set(), noticeTimer, selectedClip = 0, timelineDraft = null, t
 let timelineRecovery, timelineInitial, timelineStored;
 let editing = false, polling = false;
 let activeScenePreview, editorPreview, reviewEdit, reviewReturnFocus;
+let focusedJobLink;
 let experimentVersion = null;
 let youtubeVersion = null;
 
@@ -2722,12 +2723,15 @@ const jobMessages = {
   "Cancelled before execution": ["Cancelled before execution", "Cancelado antes da execução"],
 };
 
-function jobsTable() {
+function jobsTable(requested = null) {
   const currency = project.costs.currency;
   const activeSlots = new Set(project.jobs.filter(isActiveJob).map(job => job.slot));
-  const priority = job => isActiveJob(job) ? 0 : job.uncertain > 0 || canResumeRunway(job) ? 1 : 2;
+  const priority = job => job.id === requested ? -1 :
+    isActiveJob(job) ? 0 : job.uncertain > 0 || canResumeRunway(job) ? 1 : 2;
   const jobs = [...project.jobs].sort((a, b) => priority(a) - priority(b)).slice(0, 40);
   return card(row(node("h2", {}, tr("Jobs", "Trabalhos")), button(tr("Refresh", "Atualizar"), refresh)),
+    requested && !jobs.some(job => job.id === requested) &&
+      node("p", {role: "status"}, tr("This job is unavailable in the current project.", "Este trabalho não está disponível no projeto atual.")),
     ...jobs.map(job => {
       const active = isActiveJob(job);
       const resume = canResumeRunway(job);
@@ -2766,8 +2770,12 @@ function jobsTable() {
       const subject = job.slot.split("/")[1];
       const scene = subject && sceneData(subject)?.data.title;
       const info = [job.provider, job.model, active ? job.progress + "%" : null].filter(Boolean).join(" · ");
-      return node("section", {class: "card stack job-details"},
-      row(node("h3", {}, [tr(...operation), scene].filter(Boolean).join(" · ")), badge(job.status), small(info)),
+      const heading = [tr(...operation), scene].filter(Boolean).join(" · ");
+      const result = job.result && project.versions.find(version => version.id === job.result);
+      const focused = job.id === requested;
+      return node("section", {id: "job-" + job.id, class: "card stack job-details", tabindex: focused ? "-1" : null,
+        "aria-label": focused ? heading : null},
+      row(node("h3", {}, heading), badge(job.status), small(info)),
       active && Boolean(job.cancel) && small(tr("Cancellation requested", "Cancelamento solicitado")),
       job.reserved > 0 && small(tr("Reserved · ", "Reservado · ") + format(job.reserved, currency)),
       job.uncertain > 0 && node("p", {}, tr("Charge to verify · ", "Cobrança a verificar · ") + format(job.uncertain, currency),
@@ -2782,6 +2790,8 @@ function jobsTable() {
         tr("Resume checking the original Runway task.", "Retome a consulta da tarefa original no Runway.")),
       job.last_error && !active && node("p", {}, message ? tr(...message) : job.last_error),
       row(active && !job.cancel && button(tr("Cancel", "Cancelar"), cancelJob),
+        result?.url && node("a", {href: result.url, target: "_blank", rel: "noopener"},
+          tr("Open result · v", "Abrir resultado · v") + result.seq),
         resume && !slotBusy && button(tr("Resume Runway task check", "Retomar consulta no Runway"),
           () => mutate(endpoint + "/reconcile", "POST"), true),
         job.uncertain > 0 && button(tr("Record verified charge", "Registrar cobrança verificada"), confirmSettlement),
@@ -2909,7 +2919,7 @@ function costsView() {
           ui("dialog").close();
         }, true),
       ]);
-    })), jobsTable());
+    })), jobsTable(new URLSearchParams(location.search).get("job")));
 }
 
 const codexLoginPath = "/api/providers/codex/login";
@@ -3324,6 +3334,7 @@ function render() {
   else url.searchParams.delete("project");
   url.searchParams.set("view", page);
   if (page !== "proposals") url.searchParams.delete("proposal");
+  if (page !== "costs") url.searchParams.delete("job");
   if (page !== "delivery") {
     for (const key of ["assembly", "t", "note"]) url.searchParams.delete(key);
   }
@@ -3375,7 +3386,14 @@ function render() {
   }
   const views = {dashboard, research: researchView, scripts: scriptsView, storyboard: storyboardView,
     scenes: scenesView, narration: narrationView, timeline: timelineView, thumbnails: thumbnailsView, assets: assetView, costs: costsView, settings: settingsView};
+  const requestedJob = page === "costs" && url.searchParams.get("job");
+  const jobLink = requestedJob && projectId + "/" + requestedJob;
+  const jobWasFocused = requestedJob && document.activeElement?.id === "job-" + requestedJob;
   ui("workspace").replaceChildren(views[page]());
+  if (jobLink && (jobLink !== focusedJobLink || jobWasFocused)) {
+    ui("job-" + requestedJob)?.focus({preventScroll: Boolean(jobWasFocused)});
+  }
+  focusedJobLink = jobLink;
 }
 
 function navigate(name) {

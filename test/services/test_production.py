@@ -2338,9 +2338,39 @@ def test_runway_recovery_polls_saved_task_without_resubmission(sandbox, monkeypa
     project = f"/api/projects/{pid}"
     reconcile = project + f"/jobs/{job_id}/reconcile"
     settle = project + f"/jobs/{job_id}/settle"
+    grant = api.post(
+        project + "/agent-access", json={"label": "Queue reader", "scope": "read"}
+    ).raise_for_status().json()
+    agent_auth = {"Authorization": "Bearer " + grant["token"]}
+    jobs_url = f"/api/agent/v1/projects/{pid}/jobs"
+    status_url = jobs_url + "/" + job_id
+    assert api.get(jobs_url).status_code == 401
+    assert api.get(jobs_url + "?limit=51", headers=agent_auth).status_code == 422
+    assert api.get(jobs_url + "?state=wrong", headers=agent_auth).status_code == 422
+    assert api.get(jobs_url + "/" + uuid4().hex, headers=agent_auth).status_code == 404
+    assert api.post(reconcile, headers=agent_auth).status_code == 401
+    failed = api.get(status_url, headers=agent_auth).raise_for_status().json()
+    assert failed["next_action"] == "resume_provider_task"
+    assert failed["progress"] is None and failed["billing_review_required"]
+    assert failed["owner_url"] == f"/?project={pid}&view=costs&job={job_id}"
+    assert {"remote", "quote", "last_error", "settlement", "actual", "spec"}.isdisjoint(
+        failed
+    )
+    assert remote not in str(failed)
+    assert api.get(jobs_url + "?state=attention", headers=agent_auth).json() == {
+        "jobs": [failed]
+    }
+    completed = api.get(jobs_url + "?state=completed", headers=agent_auth).json()["jobs"]
+    assert all(item["status"] == "COMPLETED" and item["progress"] == 100 for item in completed)
+    image = next(item["result"] for item in completed if item["operation"] == "image")
+    assert image["kind"] == "image" and image["current"] and image["fresh"]
+    assert api.get(image["url"], headers=agent_auth).status_code == 200
     other = {"Authorization": "Bearer " + "b" * 32}
     assert api.post(reconcile, headers=other).status_code == 404
     assert api.post(reconcile).status_code == 200
+    active = api.get(jobs_url + "?state=active&limit=1", headers=agent_auth).json()["jobs"]
+    assert len(active) == 1 and active[0]["id"] == job_id
+    assert active[0]["next_action"] == "wait"
     with reopened.transaction(write=False) as db:
         deadline = reopened._job(db, pid, job_id)["poll_deadline"]
     assert api.post(reconcile).status_code == 200
@@ -2355,6 +2385,7 @@ def test_runway_recovery_polls_saved_task_without_resubmission(sandbox, monkeypa
     assert api.post(settle, json=receipt).status_code == 200
     assert api.post(settle, json=dict(receipt, actual=148)).status_code == 409
     [replacement] = authorize(reopened, actor, pid, req)
+    assert api.get(status_url, headers=agent_auth).json()["next_action"] == "wait_for_slot"
     assert api.post(reconcile).status_code == 409
     reopened.cancel(actor, pid, replacement)
     assert api.post(reconcile).status_code == 200
@@ -2371,6 +2402,12 @@ def test_runway_recovery_polls_saved_task_without_resubmission(sandbox, monkeypa
         reopened.add(db, pid, f"video/{sid}", "video", {"seconds": 3})
     stale = api.post(reconcile)
     assert stale.status_code == 409 and "inputs changed" in stale.json()["detail"]
+    unavailable = api.get(status_url, headers=agent_auth).raise_for_status().json()
+    assert unavailable["next_action"] == "review_failure"
+    assert not unavailable["billing_review_required"]
+    assert "verified-runway-receipt" not in str(unavailable)
+    assert api.delete(project + "/agent-access/" + grant["id"]).status_code == 200
+    assert api.get(status_url, headers=agent_auth).status_code == 401
 
 
 def test_openai_research_uses_supplied_source_catalog(sandbox, monkeypatch):

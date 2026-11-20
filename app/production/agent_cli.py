@@ -33,6 +33,12 @@ def main(argv=None):
     parser.add_argument("--project-url", required=True, type=project_url)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("context", help="Read the project and current cut")
+    jobs = commands.add_parser("jobs", help="List project jobs and review handoffs")
+    jobs.add_argument(
+        "--state", choices=("all", "active", "attention", "completed"), default="all"
+    )
+    jobs.add_argument("--limit", type=int, default=20)
+    commands.add_parser("job", help="Read one job by ID").add_argument("job_id")
     commands.add_parser(
         "evidence", help="Read the research bound to a scene"
     ).add_argument("scene")
@@ -47,6 +53,8 @@ def main(argv=None):
         "status", help="Read a submitted proposal and its decision"
     ).add_argument("proposal", help="Proposal ID")
     args = parser.parse_args(argv)
+    if args.command == "jobs" and not 1 <= args.limit <= 50:
+        parser.error("Use a limit between 1 and 50")
     header = "Bearer " + os.getenv("MPT_AGENT_TOKEN", "")
     if not bearer_digest(header):
         parser.error("Set MPT_AGENT_TOKEN to the project's agent token")
@@ -57,6 +65,15 @@ def main(argv=None):
         ) as client:
             if args.command == "context":
                 response = client.get(args.project_url)
+            elif args.command == "jobs":
+                response = client.get(
+                    args.project_url + "/jobs",
+                    params={"state": args.state, "limit": args.limit},
+                )
+            elif args.command == "job":
+                if not re.fullmatch(r"[a-f0-9]{32}", args.job_id):
+                    parser.error("Use a job ID returned by jobs")
+                response = client.get(f"{args.project_url}/jobs/{args.job_id}")
             elif args.command == "evidence":
                 if not re.fullmatch(r"[a-f0-9]{32}", args.scene):
                     parser.error("Use a scene ID returned by context")
