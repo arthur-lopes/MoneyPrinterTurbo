@@ -382,6 +382,54 @@ def test_research_revision_preconditions_preserve_source_catalog(sandbox):
         assert retained == [payload, edited, payload]
 
 
+def test_editorial_focus_survives_generation_and_tracks_script_research(sandbox):
+    store, actor, pid = sandbox
+    endpoint = f"/api/projects/{pid}"
+    agent_context = f"/api/agent/v1/projects/{pid}"
+    owner = {"Authorization": "Bearer " + "a" * 32}
+    focus = {
+        "question": "Why was the first signal early?",
+        "finding": "The early signal coincided with an atmospheric pressure pulse.",
+        "angle": "Compare two instruments on one clock.",
+        "uncertainty": "The mechanism was tested in a model.",
+    }
+    source = {"title": "Instrument notes", "url": "https://example.org/notes", "excerpt": "Two readings coincided."}
+    app = create_app(store.directory, {"a" * 32: actor}, worker_enabled=False)
+    with TestClient(app, base_url="http://127.0.0.1", headers=owner) as api:
+        first = api.post(endpoint + "/research", json={
+            "sources": [source], "claims": [], "editorial_focus": focus,
+        }).raise_for_status().json()
+        [job] = authorize(store, actor, pid, {
+            "operation": "research", "provider": "local", "sources": [source],
+        })
+        assert Worker(store).step()
+        generated = head(store, pid, "research")
+        assert generated["job"] == job and generated["id"] != first["id"]
+        assert generated["data"]["editorial_focus"] == focus
+        review(store, actor, pid, generated)
+        script = api.post(endpoint + "/script", json={"sections": [{
+            "key": "opening", "title": "The early reading", "seconds": 5,
+            "narration": "Two readings coincided.", "category": "verified", "sources": [1],
+        }]}, headers={"X-Research-Revision": generated["id"]}).raise_for_status().json()
+        grant = api.post(endpoint + "/agent-access", json={"scope": "read", "label": "Editorial QA"}).raise_for_status().json()
+        agent = {"Authorization": "Bearer " + grant["token"]}
+        context = api.get(agent_context, headers=agent).raise_for_status().json()
+        assert context["script"]["id"] == script["id"]
+        assert context["script"]["research_revision"] == context["research"]["id"] == generated["id"]
+        assert context["script_research"] is None
+        revision = api.post(endpoint + "/research", json={
+            "sources": [{**source, "title": "A different revision"}],
+            "claims": [], "editorial_focus": {**focus, "finding": "An alternative to examine."},
+        }, headers={"If-Match": f'"{generated["id"]}"'}).raise_for_status().json()
+        context = api.get(agent_context, headers=agent).raise_for_status().json()
+        assert context["research"]["id"] == revision["id"]
+        assert context["script_research"]["id"] == context["script"]["research_revision"] == generated["id"]
+        assert context["script_research"]["data"]["editorial_focus"] == focus
+        assert context["script_research"]["data"]["sources"] == [source]
+        assert api.post(endpoint + "/research", json={"editorial_focus": focus}, headers=agent).status_code == 401
+        assert api.get("/api/agent/v1/projects/" + uuid4().hex, headers=agent).status_code == 404
+
+
 def test_scene_evidence_preserves_original_research_and_detects_citation_changes(
     sandbox,
 ):
@@ -720,6 +768,7 @@ def test_editorial_files_are_private_and_create_idempotent_draft_projects(tmp_pa
             research["kind"] == "research" and research["status"] == "AWAITING_REVIEW"
         )
         assert research["data"]["sources"] == [source]
+        assert research["data"]["editorial_focus"]["finding"] == "The readings matched."
         assert detail["jobs"] == []
 
 
@@ -2725,6 +2774,12 @@ def test_openai_research_uses_supplied_source_catalog(sandbox, monkeypatch):
         "url": "https://example.org/source",
         "excerpt": "The supplied excerpt.",
     }
+    focus = m.EditorialFocus(question="How was the first result recorded?")
+    with store.transaction() as db:
+        store.add(
+            db, pid, "research", "research",
+            m.Research(sources=[source], editorial_focus=focus).model_dump(),
+        )
     [jid] = authorize(
         store,
         actor,
@@ -2738,6 +2793,8 @@ def test_openai_research_uses_supplied_source_catalog(sandbox, monkeypatch):
         content = json.loads(request.content)
         assert content["model"] == "gpt-4.1-mini"
         assert content["response_format"]["type"] == "json_object"
+        prompt = json.loads(content["messages"][-1]["content"])
+        assert prompt["editorial_focus"] == focus.model_dump()
         return httpx.Response(
             200,
             json={
@@ -2759,6 +2816,7 @@ def test_openai_research_uses_supplied_source_catalog(sandbox, monkeypatch):
                                             "url": "https://example.org/elsewhere",
                                         }
                                     ],
+                                    "editorial_focus": {"question": "Unrequested replacement"},
                                 }
                             )
                         }
@@ -2776,6 +2834,7 @@ def test_openai_research_uses_supplied_source_catalog(sandbox, monkeypatch):
     research = head(store, pid, "research")
     assert research["status"] == "AWAITING_REVIEW"
     assert research["data"]["sources"] == [source]
+    assert research["data"]["editorial_focus"] == focus.model_dump()
     assert research["data"]["claims"][0]["sources"] == [1]
     assert calls == [adapters.OPENAI + "/chat/completions"]
     snapshot = store.snapshot(actor, pid)

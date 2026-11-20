@@ -176,7 +176,7 @@ def create_project(store, actor, episode_id, options):
                     currency="BRL",
                 ).model_dump()
                 project["editorial"] = episode.model_dump(
-                    exclude={"draft_prompt": True, "evidence": {"sources", "claims"}},
+                    exclude={"draft_prompt": True, "evidence": {"sources", "claims", "editorial_focus"}},
                     exclude_none=True,
                 )
                 pid = store.insert_project(db, actor, project)
@@ -184,6 +184,12 @@ def create_project(store, actor, episode_id, options):
                     research = m.Research(
                         sources=episode.evidence.sources,
                         claims=episode.evidence.claims,
+                        editorial_focus=m.EditorialFocus(
+                            question=episode.evidence.question,
+                            finding=episode.evidence.finding,
+                            angle=episode.evidence.angle,
+                            uncertainty=episode.evidence.uncertainty,
+                        ),
                     )
                     store.add(db, pid, "research", "research", research.model_dump())
                 db.execute(

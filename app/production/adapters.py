@@ -147,7 +147,9 @@ def _context_prompt(kind, payload):
             "Create a research worksheet. Return a JSON object with claims. Each claim has text, category "
             "(verified, assumption, speculation, or uncertain), and sources (one-based supplied indices). "
             "Use verified only when directly supported by the supplied excerpts. Never invent sources. "
-            "Extract the strongest concrete evidence behind the episode question: a recorded observation, "
+            "Use the editor's editorial_focus, when present, to prioritize evidence. It is editorial direction "
+            "and does not verify any claim. Extract the strongest concrete evidence behind the episode question: "
+            "a recorded observation, "
             "measurement, comparison, or finding. Distinguish a measured result from its proposed cause. "
             "Keep the date, scope, and limits of a reported figure. Flag a central claim as uncertain "
             "when the supplied materials only support a hypothesis. "
@@ -159,7 +161,9 @@ def _context_prompt(kind, payload):
             "speculation, or uncertain), and sources (one-based supplied indices). Use the requested structure, "
             "target duration, tone and original language. Retain existing keys for revised sections. "
             "Distinguish established facts from hypothetical scenarios and never invent sources. "
-            "For an editorial evidence brief, use its question and finding as the spine of the episode. "
+            "When research.editorial_focus is present, use its question and proposed finding as the spine "
+            "of the episode. Test the proposed finding against the excerpts and make its uncertainty explicit. "
+            "Use a catalog evidence brief if no editorial focus was saved. "
             "Open on a sourced surprise, show how it was documented, then explain why it matters. "
             "Name the case, study, or recorded observation early. Make every section add evidence, an explanation, "
             "or a meaningful limit. Replace familiar, generic consequences with a real, specific case within "
@@ -212,7 +216,7 @@ def _context_prompt(kind, payload):
 
 def _validated_text(kind, data, payload):
     if kind == "research":
-        data["sources"] = payload["sources"]
+        data = dict(data, sources=payload["sources"], editorial_focus=payload.get("editorial_focus"))
         return Research.model_validate(data).model_dump()
     if kind == "script":
         return Script.model_validate(data).model_dump()
@@ -241,7 +245,7 @@ class Local:
                 {"text": source["excerpt"], "category": "uncertain", "sources": [i]}
                 for i, source in enumerate(payload["sources"], 1)
             )
-            return Result({"sources": payload["sources"], "claims": claims})
+            return Result(_validated_text(kind, {"claims": claims}, payload))
         if kind == "script":
             pt = project["languages"][0] == "pt-BR"
             prefix = (

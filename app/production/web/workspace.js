@@ -390,6 +390,13 @@ function evidenceBrief(evidence, includeSources = false) {
     }, source.title))));
 }
 
+const editorialFocusLabels = {
+  question: ["Question to answer", "Pergunta a responder"],
+  finding: ["Proposed finding", "Descoberta a sustentar"],
+  angle: ["Specific angle", "Recorte específico"],
+  uncertainty: ["Limits of the evidence", "Limite da evidência"],
+};
+
 async function catalogView() {
   const {catalog, projects: linked} = await api("/api/catalog");
   const importFiles = () => {
@@ -727,10 +734,38 @@ function citationPicker(sources, selected, changed) {
 function researchView() {
   const target = projectId;
   let item = current("research");
-  let initial = {sources: item?.data.sources || [], claims: item?.data.claims || []};
+  const researchData = version => {
+    const focus = version?.data.editorial_focus;
+    return {
+      sources: version?.data.sources || [], claims: version?.data.claims || [],
+      editorial_focus: focus ? Object.fromEntries(Object.keys(editorialFocusLabels).map(key => [key, focus[key] || null])) : null,
+    };
+  };
+  let initial = researchData(item);
   const {sources, claims} = structuredClone(initial);
+  const focusFields = Object.entries(editorialFocusLabels).map(([key, labels]) => {
+    const value = initial.editorial_focus?.[key] || "";
+    const field = key === "question" ? input(value, {maxlength: 200}) : area(value, {rows: 2, maxlength: 8000});
+    return {key, field, control: label(tr(...labels), field)};
+  });
+  const copy = project.data.editorial?.evidence;
+  const focusEditor = node("details", {}, node("summary", {}, tr("Question and finding", "Pergunta e descoberta")),
+    stack(...focusFields.map(item => item.control), copy && !initial.editorial_focus &&
+      button(tr("Use catalog brief", "Usar pauta do catálogo"), () => {
+        for (const {key, field} of focusFields) field.value = copy[key] || "";
+        updateStatus();
+        focusFields[0].field.focus();
+      })));
+  const researchDraft = () => {
+    const focus = Object.fromEntries(focusFields.map(({key, field}) => [key, field.value.trim() || null]));
+    return {sources, claims, editorial_focus: Object.values(focus).some(Boolean) ? focus : null};
+  };
   const provider = select([["local", tr("Local worksheet", "Ficha local")], codexOption(), apiOption],
     project.data.defaults?.research || "local");
+  const estimate = button(tr("Estimate research", "Estimar pesquisa"), () =>
+    quote([{operation: "research", provider: provider.value, sources}]));
+  const focusSaveHint = small(tr("Save your changes to the question and finding before estimating research.",
+    "Salve as alterações na pergunta e na descoberta antes de estimar a pesquisa."));
   const checklist = project.data.profile?.research_checklist;
   const sourceList = stack(), claimList = stack();
   const approveLabel = tr("Approve research", "Aprovar pesquisa");
@@ -743,12 +778,17 @@ function researchView() {
   const state = node("small", {role: "status"});
   const active = () => sourceList.isConnected && projectId === target && page === "research";
   const updateStatus = () => {
-    const dirty = json(initial) !== json({sources, claims});
+    const draft = researchDraft();
+    const dirty = json(initial) !== json(draft);
+    const focusDirty = json(initial.editorial_focus) !== json(draft.editorial_focus);
+    estimate.disabled = focusDirty || !recovery.hidden;
+    focusSaveHint.hidden = !focusDirty;
     state.textContent = dirty ? tr("Research has unsaved changes.", "A pesquisa tem alterações não salvas.") : "";
     reviewBox.hidden = dirty || !recovery.hidden;
     continueToScript.hidden = dirty || !ready(item) || !recovery.hidden;
     if (dirty || !recovery.hidden) editing = true;
   };
+  for (const {field} of focusFields) field.addEventListener("input", updateStatus);
 
   function showConflict() {
     const notice = node("p", {role: "status", tabindex: -1}, tr(
@@ -769,20 +809,20 @@ function researchView() {
         throw new Error(tr("Link a source to each verified claim.", "Vincule uma fonte a cada afirmação verificada."));
       }
     }
-    const draft = json({sources, claims});
+    const draft = json(researchDraft());
     const headers = item ? {"If-Match": '"' + item.id + '"'} : {"If-None-Match": "*"};
     try {
       const saved = await api(path("/research"), "POST", JSON.parse(draft), headers);
       if (!active()) return;
       item = saved;
-      initial = {sources: saved.data.sources, claims: saved.data.claims};
+      initial = researchData(saved);
       await refresh(false);
       if (!active()) return;
       if (current("research")?.id !== saved.id) {
         showConflict();
         return;
       }
-      if (json({sources, claims}) === draft) {
+      if (json(researchDraft()) === draft) {
         render();
         ui("research-review")?.querySelector("button")?.focus();
         notify(tr("Research revision saved.", "Revisão da pesquisa salva."));
@@ -872,15 +912,13 @@ function researchView() {
   });
   redraw();
   return stack(title(tr("Research", "Pesquisa"), revisionBadge), recovery,
-    continueToScript,
+    continueToScript, focusEditor,
     checklist && node("ul", {}, checklist.map(entry => node("li", {}, entry))),
     grid(card(node("h2", {}, tr("Sources", "Fontes")), sourceList, addSource),
       card(node("h2", {}, tr("Research claims", "Afirmações da pesquisa")), claimList, addClaim)),
     row(save, state), reviewBox,
     node("details", {}, node("summary", {}, tr("Generate a research draft", "Gerar rascunho de pesquisa")),
-      stack(label(tr("Research provider", "Provedor de pesquisa"), provider),
-        button(tr("Estimate research", "Estimar pesquisa"), () =>
-          quote([{operation: "research", provider: provider.value, sources}])))),
+      stack(label(tr("Research provider", "Provedor de pesquisa"), provider), estimate, focusSaveHint)),
     revisions("research"));
 }
 
@@ -1106,7 +1144,33 @@ function scriptsView() {
   }
   fields();
   const permanent = project.data.profile?.script_instructions;
+  const bound = item ? project.versions.find(version => version.kind === "research" &&
+    item.dependencies.some(dep => dep.id === version.id)) : research;
+  const focus = bound?.data.editorial_focus || project.data.editorial?.evidence;
+  const focusType = bound?.data.editorial_focus ? (item ?
+    tr("Research linked to the saved script · v", "Pesquisa ligada ao roteiro salvo · v") + bound.seq :
+    tr("Research for the first script · v", "Pesquisa do primeiro roteiro · v") + bound.seq) :
+    tr("Catalog brief", "Pauta do catálogo");
+  const usedSources = bound?.data.sources || [];
+  const savedSections = item?.data.sections || [];
+  const firstCitation = savedSections.findIndex(section => section.sources.some(number => usedSources[number - 1]));
+  const citationInfo = firstCitation >= 0 ? savedSections[firstCitation] : null;
+  const evidenceStart = citationInfo && savedSections.slice(0, firstCitation).reduce((time, section) => time + section.seconds, 0);
+  const openingEvidence = item && (citationInfo ? node("details", {}, node("summary", {}, [
+    tr("First section with sources", "Primeiro trecho com fontes"), citationInfo.title, formatDuration(evidenceStart),
+  ].join(" · ")), stack(...[...new Set(citationInfo.sources)].map(number => {
+    const source = usedSources[number - 1];
+    return source && stack(node("a", {href: source.url, target: "_blank", rel: "noopener noreferrer"}, source.title),
+      node("p", {class: "review-note-text"}, source.excerpt));
+  }))) : small(tr("The saved script has no linked sources.", "O roteiro salvo ainda não tem trechos vinculados a fontes.")));
+  const focusSummary = (focus || item) && node("details", {open: Boolean(focus)},
+    node("summary", {}, tr("Question and finding", "Pergunta e descoberta")),
+    focus && small(focusType),
+    focus && node("dl", {}, Object.entries(editorialFocusLabels).flatMap(([key, labels]) =>
+      focus[key] ? [node("dt", {}, tr(...labels)), node("dd", {}, focus[key])] : [])),
+    openingEvidence);
   return stack(title(tr("Scripts", "Roteiros"), assetBadge(item)), researchGate,
+    focusSummary,
     permanent && node("details", {}, node("summary", {},
       tr("Permanent script instructions", "Instruções permanentes de roteiro")),
       permanent.split("\n\n").map(text => node("p", {}, text))),

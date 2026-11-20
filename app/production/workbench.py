@@ -492,6 +492,9 @@ class Workbench(Store):
             payload.update(language=language, voice=request.voice)
         if kind == "research":
             payload["sources"] = [source.model_dump() for source in request.sources]
+            research = self.head(db, pid, "research")
+            if research and (focus := research["data"].get("editorial_focus")):
+                payload["editorial_focus"] = focus
         if kind == "script":
             research = self.require(db, pid, "research")
             deps.append({"id": research["id"]})

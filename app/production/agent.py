@@ -149,6 +149,13 @@ class AgentProjects:
             timeline = self.store.head(db, pid, "timeline")
             research = self.store.head(db, pid, "research")
             script = self.store.head(db, pid, "script")
+            bound_research = self.store._script_research(db, pid, script)
+            script_view = _version(script)
+            if script_view and bound_research:
+                script_view["research_revision"] = bound_research["id"]
+            earlier_research = bound_research and (
+                not research or research["id"] != bound_research["id"]
+            )
             assembly = self.store.head(db, pid, "assembly")
             prefix = f"/api/agent/v1/projects/{pid}/media/"
             scenes = []
@@ -200,7 +207,8 @@ class AgentProjects:
                 "jobs_url": f"/api/agent/v1/projects/{pid}/jobs",
                 "timeline": _version(timeline),
                 "research": _version(research),
-                "script": _version(script),
+                "script": script_view,
+                "script_research": _version(bound_research) if earlier_research else None,
                 "preview": assembly
                 and {
                     "id": assembly["id"],

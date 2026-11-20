@@ -135,9 +135,19 @@ class Claim(Input):
     sources: list[int] = Field(default_factory=list, max_length=20)
 
 
+class EditorialFocus(Input):
+    question: Short | None = None
+    finding: Text | None = None
+    angle: Text | None = None
+    uncertainty: Text | None = None
+
+
 class Research(Input):
     sources: list[Source] = Field(default_factory=list, max_length=30)
     claims: list[Claim] = Field(default_factory=list, max_length=60)
+    editorial_focus: EditorialFocus | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def provenance(self):
@@ -148,6 +158,8 @@ class Research(Input):
                 )
             if claim.category == "verified" and not claim.sources:
                 raise ValueError("Verified claims require a supplied source")
+        if self.editorial_focus and not any(self.editorial_focus.model_dump().values()):
+            self.editorial_focus = None
         return self
 
 
