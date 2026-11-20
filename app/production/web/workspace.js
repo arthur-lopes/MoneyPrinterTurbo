@@ -1134,7 +1134,6 @@ function timelineView() {
   const panel = node("div", {class: "preview-stage"});
   const previewInfo = node("p", {class: "muted preview-info"});
   const draftInfo = node("small", {role: "status"});
-  const rendered = assemblyPlayer(assembly);
   const assemblyBadge = assetBadge(assembly);
   const versions = new Map(project.versions.map(v => [v.id, v]));
   const renderedRevision = versions.get(assembly?.data.timeline_revision);
@@ -1143,14 +1142,33 @@ function timelineView() {
     return slot?.startsWith("video/") ? [{...entry, sceneId: slot.slice(6)}] : [];
   });
   const remembered = editorPreview?.project === projectId ? editorPreview : {};
-  const mode = select([
-    ...(rendered ? [["assembly", tr("Latest assembly", "Última montagem")]] : []),
+  const interfaceLanguage = locale === "pt" ? "pt-BR" : "en-US";
+  const cutLanguage = draft.clips.length && draft.clips.every(clip =>
+    usable(sceneData(clip.scene)) && usable(footage(clip))) ?
+    [remembered.language, interfaceLanguage, ...draft.languages].find(language =>
+      draft.languages.includes(language) && draft.clips.every(clip =>
+        usable(current("voice/" + clip.scene + "/" + language)))) : undefined;
+  const fallbackMode = assembly?.url ? "assembly" : "clip";
+  const sources = [
     ["cut", tr("Cut preview", "Prévia do corte")],
+    ...(assembly?.url ? [["assembly", tr("Rendered assembly", "Montagem renderizada")]] : []),
     ["scene", tr("Live scene", "Prévia da cena")],
     ["clip", tr("Original take", "Tomada original")],
-  ], ["cut", "scene", "clip"].includes(remembered.mode) ? remembered.mode : rendered ? "assembly" : "clip");
+  ];
+  let explicitMode = sources.some(([value]) => value === remembered.mode) ? remembered.mode : null;
+  let openingCut = !explicitMode && Boolean(cutLanguage);
+  const mode = select(sources, explicitMode || (openingCut ? "cut" : fallbackMode));
   mode.setAttribute("aria-label", tr("Preview source", "Fonte da prévia"));
-  const interfaceLanguage = locale === "pt" ? "pt-BR" : "en-US";
+  const previewWarning = node("small", {class: "scene-preview-status", role: "status"});
+  const retryCut = button(tr("Retry cut preview", "Tentar prévia do corte novamente"), () => {
+    openingCut = true;
+    mode.value = "cut";
+    mode.focus();
+    clearPreviewWarning();
+    showPreview(true);
+  });
+  const previewRecovery = row(previewWarning, retryCut);
+  previewRecovery.hidden = true;
   const previewLanguage = select([]);
   const languageField = label(tr("Preview language", "Idioma da prévia"), previewLanguage);
   languageField.classList.add("scene-preview-language");
@@ -1162,7 +1180,7 @@ function timelineView() {
   activeScenePreview = scenePlayer;
   const interactive = () => mode.value === "scene" || mode.value === "cut";
   let sceneRequest = 0, sceneTimer, sceneKey, previewLanguages = [];
-  let previewMedia, clipPreview, clipPreviewId;
+  let previewMedia, clipPreview, clipPreviewId, rendered;
 
   function footage(clip) {
     return clip?.video ? versions.get(clip.video) : clip && current("video/" + clip.scene);
@@ -1170,6 +1188,11 @@ function timelineView() {
 
   function referenceImage(video) {
     return video?.dependencies.map(dep => versions.get(dep.id)).find(asset => asset?.kind === "image");
+  }
+
+  function clearPreviewWarning() {
+    previewWarning.textContent = "";
+    previewRecovery.hidden = true;
   }
 
   function refreshDraftInfo() {
@@ -1188,10 +1211,23 @@ function timelineView() {
     }, {once: true});
   }
 
+  function renderedPlayer() {
+    if (rendered) return rendered;
+    rendered = assemblyPlayer(assembly);
+    rendered.addEventListener("timeupdate", () => {
+      if (mode.value !== "assembly" || inspector.contains(document.activeElement)) return;
+      const chapter = chapters.find(item => item.start <= rendered.currentTime && rendered.currentTime < item.end);
+      const index = draft.clips.findIndex(clip => clip.scene === chapter?.sceneId);
+      if (index >= 0 && index !== selectedClip) selectClip(index, false);
+    });
+    return rendered;
+  }
+
   function syncPreviewLanguages() {
     const languages = draft.languages.length ? draft.languages : project.data.languages;
     if (languages.join() !== previewLanguages.join()) {
-      const preferred = [previewLanguage.value, remembered.language, interfaceLanguage].find(lang => languages.includes(lang));
+      const preferred = [previewLanguage.value, openingCut && cutLanguage, remembered.language, interfaceLanguage]
+        .find(lang => languages.includes(lang));
       previewLanguage.replaceChildren(...languages.map(lang => node("option", {value: lang}, lang)));
       previewLanguage.value = preferred || languages[0];
       previewLanguages = [...languages];
@@ -1203,7 +1239,7 @@ function timelineView() {
     syncPreviewLanguages();
     const clip = draft.clips[selectedClip];
     if (!interactive() || !clip) return;
-    editorPreview = {project: projectId, mode: mode.value, language: previewLanguage.value};
+    editorPreview = {project: projectId, mode: explicitMode, language: previewLanguage.value};
     const view = mode.value;
     const language = previewLanguage.value;
     const spec = view === "cut" ? {timeline: draft, language} : {clip, language, aspect: draft.aspect,
@@ -1220,11 +1256,20 @@ function timelineView() {
       if (!stillSelected()) return;
       try {
         const plan = await api(endpoint, "POST", JSON.parse(key)[1]);
-        if (stillSelected()) scenePlayer.apply(plan, draft.clips[selectedClip]?.scene);
+        if (stillSelected()) {
+          openingCut = false;
+          scenePlayer.apply(plan, draft.clips[selectedClip]?.scene);
+        }
       } catch (error) {
         if (stillSelected()) {
           sceneKey = null;
-          scenePlayer.error(error.message);
+          if (openingCut) {
+            openingCut = false;
+            mode.value = fallbackMode;
+            showPreview();
+            previewRecovery.hidden = false;
+            previewWarning.textContent = tr("The cut preview could not load.", "Não foi possível carregar a prévia do corte.");
+          } else scenePlayer.error(error.message);
         }
       }
     }, 120);
@@ -1234,19 +1279,22 @@ function timelineView() {
     if (lang && !previewLanguages.includes(lang)) return;
     if (lang) previewLanguage.value = lang;
     if (!interactive()) mode.value = "scene";
+    explicitMode = mode.value;
+    openingCut = false;
+    clearPreviewWarning();
     showPreview();
   }
 
   function showPreview(seekToScene = false) {
     const clip = draft.clips[selectedClip];
-    let media = rendered;
+    let media;
     syncPreviewLanguages();
-    editorPreview = {project: projectId, mode: mode.value, language: previewLanguage.value};
+    editorPreview = {project: projectId, mode: explicitMode, language: previewLanguage.value};
     assemblyBadge.hidden = mode.value !== "assembly";
     if (interactive()) {
       media = scenePlayer.element;
-      previewInfo.textContent = mode.value === "cut" ? tr("Interactive cut. Use the rendered assembly for approval.",
-        "Prévia interativa do corte. Use a montagem renderizada para aprovar.") :
+      previewInfo.textContent = mode.value === "cut" ? tr("Edits appear here. Review the rendered assembly to approve.",
+        "Os ajustes aparecem aqui. Revise a montagem renderizada para aprovar.") :
         tr("Cut, narration and captions. Check the music, effects and transitions in the assembly.",
           "Corte, narração e legendas. Confira trilha, efeitos e transições na montagem.");
       if (clip) updateScenePreview();
@@ -1270,6 +1318,7 @@ function timelineView() {
         tr("Add a take to this scene to preview it.", "Adicione uma tomada à cena para assistir aqui.");
       if (seekToScene) seek(media, clip?.trim || 0);
     } else {
+      media = renderedPlayer();
       previewInfo.textContent = (assembly.data.rough_cut ?
         tr("Local draft · v", "Rascunho local · v") : tr("Rendered assembly · v", "Montagem renderizada · v")) + assembly.seq +
         (renderedRevision ? tr(" · timeline v", " · linha do tempo v") + renderedRevision.seq : "") +
@@ -1347,18 +1396,18 @@ function timelineView() {
     if (focus) sequence.children[selectedClip]?.focus();
   }
 
-  mode.addEventListener("change", () => showPreview(true));
+  mode.addEventListener("change", () => {
+    explicitMode = mode.value;
+    openingCut = false;
+    clearPreviewWarning();
+    showPreview(true);
+  });
   mode.addEventListener("input", event => event.stopPropagation());
-  previewLanguage.addEventListener("change", updateScenePreview);
+  previewLanguage.addEventListener("change", () => {
+    openingCut = false;
+    updateScenePreview();
+  });
   previewLanguage.addEventListener("input", event => event.stopPropagation());
-  if (rendered) {
-    rendered.addEventListener("timeupdate", () => {
-      if (mode.value !== "assembly" || inspector.contains(document.activeElement)) return;
-      const chapter = chapters.find(item => item.start <= rendered.currentTime && rendered.currentTime < item.end);
-      const index = draft.clips.findIndex(clip => clip.scene === chapter?.sceneId);
-      if (index >= 0 && index !== selectedClip) selectClip(index, false);
-    });
-  }
 
   function clipEditor(clip) {
     const options = project.versions.filter(item => item.slot === "video/" + clip.scene && usable(item)).map(item => [item.id, "v" + item.seq]);
@@ -1508,7 +1557,8 @@ function timelineView() {
       navigate("delivery");
     }), activeRender && small(tr("Rendering · ", "Renderizando · ") + activeRender.progress + "%"));
   const content = node("section", {class: "editor-surface card stack"}, node("div", {class: "editor-layout"},
-    node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo), sequence, inspector));
+    node("div", {class: "stack preview-stack"}, panel, row(mode, languageField, assemblyBadge), previewInfo, previewRecovery),
+    sequence, inspector));
   const result = stack(title(project.data.title), rough || content, !rough && row(draftInfo), !rough && controls,
     assembly && card(node("h2", {}, tr("Review rendered version", "Revisar versão renderizada")), reviewControls(assembly),
       row(node("a", {href: assembly.url + "?attachment=true"}, tr("Download assembly", "Baixar montagem")),
