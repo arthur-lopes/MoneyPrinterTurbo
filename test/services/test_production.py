@@ -2323,6 +2323,54 @@ def test_runway_recovery_polls_saved_task_without_resubmission(sandbox, monkeypa
     assert job["attempts"] == 1
     assert job["actual"] == 0
     assert job["uncertain"] == 300
+    req = {"operation": "video", "scene": sid}
+    with pytest.raises(RuleError, match="uncertain charge"):
+        authorize(reopened, actor, pid, req)
+    api = TestClient(
+        create_app(
+            store.directory,
+            {"a" * 32: actor, "b" * 32: "another"},
+            worker_enabled=False,
+        ),
+        base_url="http://127.0.0.1",
+        headers={"Authorization": "Bearer " + "a" * 32},
+    )
+    project = f"/api/projects/{pid}"
+    reconcile = project + f"/jobs/{job_id}/reconcile"
+    settle = project + f"/jobs/{job_id}/settle"
+    other = {"Authorization": "Bearer " + "b" * 32}
+    assert api.post(reconcile, headers=other).status_code == 404
+    assert api.post(reconcile).status_code == 200
+    with reopened.transaction(write=False) as db:
+        deadline = reopened._job(db, pid, job_id)["poll_deadline"]
+    assert api.post(reconcile).status_code == 200
+    with reopened.transaction(write=False) as db:
+        assert reopened._job(db, pid, job_id)["poll_deadline"] == deadline
+    with pytest.raises(RuleError, match="already active"):
+        authorize(reopened, actor, pid, req)
+    assert Worker(reopened).step()
+    assert calls[2:] == [("GET", adapters.RUNWAY + "/tasks/" + remote)]
+    receipt = {"actual": 147, "receipt": "verified-runway-receipt", "confirmed": True}
+    assert api.post(settle, json=receipt).status_code == 200
+    assert api.post(settle, json=receipt).status_code == 200
+    assert api.post(settle, json=dict(receipt, actual=148)).status_code == 409
+    [replacement] = authorize(reopened, actor, pid, req)
+    assert api.post(reconcile).status_code == 409
+    reopened.cancel(actor, pid, replacement)
+    assert api.post(reconcile).status_code == 200
+    assert api.post(settle, json=receipt).status_code == 200
+    assert Worker(reopened).step()
+    assert calls[3:] == [("GET", adapters.RUNWAY + "/tasks/" + remote)]
+    job = next(item for item in api.get(project).json()["jobs"] if item["id"] == job_id)
+    assert job["attempts"] == 1 and job["reserved"] == job["uncertain"] == 0
+    assert job["actual"] == job["settlement"]["actual"] == 147
+    assert job["settlement"]["receipt"] == receipt["receipt"]
+    with reopened.transaction() as db:
+        records = db.execute("SELECT * FROM settlements WHERE job=?", (job_id,)).fetchall()
+        assert len(records) == 1
+        reopened.add(db, pid, f"video/{sid}", "video", {"seconds": 3})
+    stale = api.post(reconcile)
+    assert stale.status_code == 409 and "inputs changed" in stale.json()["detail"]
 
 
 def test_openai_research_uses_supplied_source_catalog(sandbox, monkeypatch):

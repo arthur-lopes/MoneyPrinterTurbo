@@ -52,8 +52,8 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | POST /api/projects/{project}/quotes/{quote}/authorize | Confirm with `confirmed: true` and integer `maximum`. Repeating the same confirmation returns the same jobs. |
 | GET /api/projects/{project}/quotes/{quote} | Read the archived job inputs, estimate, and authorization decision. |
 | POST /api/projects/{project}/jobs/{job}/cancel | Cancel queued or running work. Remote cancellation can leave uncertain charges. |
-| POST /api/projects/{project}/jobs/{job}/reconcile | Poll a failed Runway job using its stored task ID. |
-| POST /api/projects/{project}/jobs/{job}/settle | Record integer `actual`, `receipt`, and `confirmed: true`. |
+| POST /api/projects/{project}/jobs/{job}/reconcile | Resume checking the saved Runway task. Repeating the request while the same job is active or complete returns success. A different active job for the asset or changed inputs returns a conflict. |
+| POST /api/projects/{project}/jobs/{job}/settle | Record integer `actual`, `receipt`, and `confirmed: true`. Repeating the same verified amount and receipt returns success. The project snapshot includes the job's reservation and recorded settlement. |
 | PUT /api/projects/{project}/budget | Set `scope`, optional `target`, integer `limit`, and `confirmed: true`. |
 | GET, PUT /api/providers | Read capabilities and credential availability or configure API providers. The Codex read-only entry reports whether the local CLI is signed into ChatGPT. |
 | POST /api/projects/{project}/uploads | Raw bytes. Use query `kind=reference\|image\|audio\|video\|voice` and `title`. Storyboard images, video, and voice use `scene`. Voice also uses `language`. For video prepared in Google Flow, pass `source_provider=google_flow`, `scene_version`, and `image_version` to record its declared source and require the same approved inputs. |

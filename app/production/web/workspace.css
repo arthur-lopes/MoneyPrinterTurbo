@@ -123,6 +123,8 @@ dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .proposal-diff { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: .55rem; }
 .proposal-value { min-width: 0; background: var(--bg); padding: .65rem; border-radius: .45rem; }
 .proposal-value p { margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.job-details { overflow-wrap: anywhere; }
+.job-details h3 { margin: 0; }
 .editor-inspector { grid-area: inspector; }
 .editor-inspector h2 { margin: 0; overflow-wrap: anywhere; }
 .clip-timing { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }

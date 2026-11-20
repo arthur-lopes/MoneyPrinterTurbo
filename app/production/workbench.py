@@ -860,10 +860,7 @@ class Workbench(Store):
                     raise RuleError(
                         "Quote inputs or pricing changed. Request a new estimate."
                     )
-                if db.execute(
-                    "SELECT 1 FROM jobs WHERE project=? AND slot=? AND status IN (?,?)",
-                    (pid, spec["slot"], *ACTIVE),
-                ).fetchone():
+                if self._slot_has_active_job(db, pid, spec["slot"]):
                     raise RuleError("A job is already active for this asset")
                 if spec["estimate"]:
                     unclear = db.execute(
@@ -1093,6 +1090,14 @@ class Workbench(Store):
             raise RuleError("Job not found", 404)
         return unpack(row, "spec")
 
+    @staticmethod
+    def _slot_has_active_job(db, pid, slot):
+        active = db.execute(
+            "SELECT 1 FROM jobs WHERE project=? AND slot=? AND status IN (?,?)",
+            (pid, slot, *ACTIVE),
+        ).fetchone()
+        return active is not None
+
     def _finish(self, db, job, state, message=None, result=None, safe=False):
         db.execute(
             "UPDATE jobs SET status=?,progress=?,last_error=?,result=? WHERE id=?",
@@ -1261,6 +1266,12 @@ class Workbench(Store):
             self.project(db, actor, pid)
             job = self._job(db, pid, jid)
             ledger = db.execute("SELECT * FROM ledger WHERE job=?", (jid,)).fetchone()
+            if not ledger["uncertain"]:
+                if db.execute(
+                    "SELECT 1 FROM settlements WHERE job=? AND actor=? AND actual=? AND receipt=?",
+                    (jid, actor, request.actual, request.receipt),
+                ).fetchone():
+                    return
             if job["status"] in ACTIVE or not ledger["uncertain"]:
                 raise RuleError("Job does not have an uncertain charge to settle")
             db.execute(
@@ -1276,12 +1287,18 @@ class Workbench(Store):
         with self.transaction() as db:
             self.project(db, actor, pid)
             job = self._job(db, pid, jid)
-            if (
-                job["provider"] != "runway"
-                or not job["remote"]
-                or job["status"] != "FAILED"
-            ):
+            if job["provider"] != "runway" or not job["remote"]:
                 raise RuleError("A failed job with a recorded Runway task is required")
+            if job["status"] in (*ACTIVE, "COMPLETED"):
+                return
+            if job["status"] != "FAILED":
+                raise RuleError("A failed job with a recorded Runway task is required")
+            if self._slot_has_active_job(db, pid, job["slot"]):
+                raise RuleError("Another job is already active for this asset")
+            if not self._current(db, job):
+                raise RuleError(
+                    "The job's inputs changed. Verify its charge with Runway."
+                )
             now = time.time()
             db.execute(
                 "UPDATE jobs SET status='DRAFT',available=?,cancel=0,polls=0,poll_deadline=? WHERE id=?",
@@ -1318,11 +1335,14 @@ class Workbench(Store):
                 seen_slots.add(asset["slot"])
                 versions.append(asset)
             jobs = [
-                dict(row)
+                unpack(row, "settlement")
                 for row in db.execute(
                     """SELECT j.id,j.slot,j.operation,j.provider,j.status,j.attempts,
-                j.progress,j.last_error,j.result,j.created,j.cancel,j.remote,j.quote,l.quoted,l.actual,l.uncertain,
-                json_extract(j.spec,'$.model') AS model FROM jobs j JOIN ledger l ON l.job=j.id
+                j.progress,j.last_error,j.result,j.created,j.cancel,j.remote,j.quote,l.quoted,l.reserved,l.actual,l.uncertain,
+                json_extract(j.spec,'$.model') AS model,
+                COALESCE((SELECT json_object('actual',s.actual,'receipt',s.receipt,'created',s.created)
+                 FROM settlements s WHERE s.job=j.id ORDER BY s.id DESC LIMIT 1),'null') AS settlement
+                FROM jobs j JOIN ledger l ON l.job=j.id
                 WHERE j.project=? ORDER BY j.created DESC,j.ordinal""",
                     (pid,),
                 )

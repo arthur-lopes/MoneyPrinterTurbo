@@ -101,6 +101,7 @@ CREATE INDEX IF NOT EXISTS project_edit_proposals ON edit_proposals(project, cre
 CREATE INDEX IF NOT EXISTS project_versions ON versions(project, slot, seq DESC);
 CREATE INDEX IF NOT EXISTS project_jobs ON jobs(project, created);
 CREATE INDEX IF NOT EXISTS ready_jobs ON jobs(status, available);
+CREATE INDEX IF NOT EXISTS job_settlements ON settlements(job, id DESC);
 CREATE TABLE IF NOT EXISTS youtube_connections (
     owner TEXT PRIMARY KEY, channel TEXT NOT NULL, title TEXT NOT NULL,
     refresh_token BLOB NOT NULL, writable INTEGER NOT NULL, revision TEXT NOT NULL,

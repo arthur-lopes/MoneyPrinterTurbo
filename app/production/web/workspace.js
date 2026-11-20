@@ -2700,45 +2700,97 @@ async function experimentsView() {
 }
 
 function jobHistory() {
-  const active = project.jobs.filter(job => ["DRAFT", "GENERATING"].includes(job.status));
-  return node("details", {open: Boolean(active.length)}, node("summary", {},
+  const needsAttention = project.jobs.some(job => isActiveJob(job) || job.uncertain > 0);
+  return node("details", {open: needsAttention}, node("summary", {},
     tr("Job history", "Histórico de trabalhos") + " (" + project.jobs.length + ")"), jobsTable());
 }
 
+const isActiveJob = job => ["DRAFT", "GENERATING"].includes(job.status);
+const canResumeRunway = job => job.provider === "runway" && job.remote && job.status === "FAILED";
+const jobNames = {
+  rough_cut: ["First draft", "Primeiro rascunho"], image: ["Image", "Imagem"],
+  video: ["Video", "Vídeo"], voice: ["Narration", "Narração"], translation: ["Translation", "Tradução"],
+  assembly: ["Assembly", "Montagem"], export: ["Export", "Exportação"],
+};
+const jobMessages = {
+  "Provider polling timed out. Reconcile the recorded task.":
+    ["The provider status check timed out.", "A consulta ao provedor excedeu o tempo de espera."],
+  "Provider response was interrupted. Verify billing before trying again.":
+    ["The provider response was interrupted.", "A resposta do provedor foi interrompida."],
+  "Interrupted during provider submission. Verify billing.":
+    ["The submission was interrupted.", "O envio da solicitação foi interrompido."],
+  "Cancelled before execution": ["Cancelled before execution", "Cancelado antes da execução"],
+};
+
 function jobsTable() {
+  const currency = project.costs.currency;
+  const activeSlots = new Set(project.jobs.filter(isActiveJob).map(job => job.slot));
+  const priority = job => isActiveJob(job) ? 0 : job.uncertain > 0 || canResumeRunway(job) ? 1 : 2;
+  const jobs = [...project.jobs].sort((a, b) => priority(a) - priority(b)).slice(0, 40);
   return card(row(node("h2", {}, tr("Jobs", "Trabalhos")), button(tr("Refresh", "Atualizar"), refresh)),
-    ...project.jobs.slice(0, 40).map(job => {
-      const cancel = ["DRAFT", "GENERATING"].includes(job.status) && !job.cancel;
+    ...jobs.map(job => {
+      const active = isActiveJob(job);
+      const resume = canResumeRunway(job);
+      const slotBusy = resume && activeSlots.has(job.slot);
+      const endpoint = path("/jobs/" + job.id);
       const confirmSettlement = () => {
         const amount = input("", {type: "number", min: 0, step: ".01"});
         const receipt = input("", {placeholder: tr("Provider invoice or receipt reference", "Referência da fatura ou recibo")});
-        modal(tr("Record verified charge", "Registrar cobrança verificada"), stack(label(tr("Actual charge", "Cobrança efetiva"), amount),
+        modal(tr("Record verified charge", "Registrar cobrança verificada"), stack(
+          node("p", {}, tr("Use the amount confirmed by the provider. Enter zero if the provider confirms no charge.",
+            "Use o valor confirmado pelo provedor. Informe zero se o provedor confirmar que não houve cobrança.")),
+          label(tr("Actual charge", "Cobrança efetiva") + " (" + currency + ")", amount),
           label(tr("Receipt reference", "Referência do recibo"), receipt)), [
           button(tr("Confirm charge", "Confirmar cobrança"), async () => {
             if (!amount.value || !amount.checkValidity() || !receipt.value.trim()) {
               throw new Error(tr("Enter a verified amount and receipt", "Informe um valor verificado e um recibo"));
             }
-            await mutate(path("/jobs/" + job.id + "/settle"), "POST",
+            await mutate(endpoint + "/settle", "POST",
               {actual: Math.round(Number(amount.value) * 100), receipt: receipt.value, confirmed: true});
             ui("dialog").close();
           }, true),
         ]);
       };
-      const operation = job.operation === "rough_cut" ? ["First draft", "Primeiro rascunho"] :
-        navLabels[job.operation] || [job.operation, job.operation];
-      return card(row(small(tr(...operation)), badge(job.status),
-        small(job.provider + " · " + job.model + " · " + job.progress + "%")),
-      job.last_error && node("p", {}, job.last_error),
-      row(cancel && button(tr("Cancel", "Cancelar"), () => mutate(path("/jobs/" + job.id + "/cancel"), "POST")),
+      const cancelJob = async () => {
+        if (!job.remote) return mutate(endpoint + "/cancel", "POST");
+        modal(tr("Cancel provider task?", "Cancelar tarefa no provedor?"),
+          node("p", {}, tr("Cancellation will be requested for this task. Check the provider for the final charge.",
+            "O cancelamento será solicitado para esta tarefa. Confira a cobrança final no provedor.")),
+          [button(tr("Confirm cancellation", "Confirmar cancelamento"), async () => {
+            await mutate(endpoint + "/cancel", "POST");
+            ui("dialog").close();
+          }, true)]);
+      };
+      const operation = jobNames[job.operation] || navLabels[job.operation] || [job.operation, job.operation];
+      const message = jobMessages[job.last_error];
+      const subject = job.slot.split("/")[1];
+      const scene = subject && sceneData(subject)?.data.title;
+      const info = [job.provider, job.model, active ? job.progress + "%" : null].filter(Boolean).join(" · ");
+      return node("section", {class: "card stack job-details"},
+      row(node("h3", {}, [tr(...operation), scene].filter(Boolean).join(" · ")), badge(job.status), small(info)),
+      active && Boolean(job.cancel) && small(tr("Cancellation requested", "Cancelamento solicitado")),
+      job.reserved > 0 && small(tr("Reserved · ", "Reservado · ") + format(job.reserved, currency)),
+      job.uncertain > 0 && node("p", {}, tr("Charge to verify · ", "Cobrança a verificar · ") + format(job.uncertain, currency),
+        (job.status === "FAILED" || job.status === "CANCELLED") && " " + tr(
+          "Check the provider's billing history before authorizing another attempt.",
+          "Confira o histórico de cobranças do provedor antes de autorizar outra tentativa.")),
+      job.settlement && small(tr("Verified charge · ", "Cobrança verificada · ") + format(job.settlement.actual, currency) +
+        " · " + tr("Receipt ", "Recibo ") + job.settlement.receipt),
+      job.remote && small(tr("Provider task · ", "Tarefa no provedor · ") + job.remote),
+      resume && small(slotBusy ?
+        tr("Wait for the active job for this asset to finish.", "Aguarde o trabalho ativo para esta tomada terminar.") :
+        tr("Resume checking the original Runway task.", "Retome a consulta da tarefa original no Runway.")),
+      job.last_error && !active && node("p", {}, message ? tr(...message) : job.last_error),
+      row(active && !job.cancel && button(tr("Cancel", "Cancelar"), cancelJob),
+        resume && !slotBusy && button(tr("Resume Runway task check", "Retomar consulta no Runway"),
+          () => mutate(endpoint + "/reconcile", "POST"), true),
+        job.uncertain > 0 && button(tr("Record verified charge", "Registrar cobrança verificada"), confirmSettlement),
         button(tr("View authorization", "Ver autorização"), async () => {
           const authorization = await api(path("/quotes/" + job.quote));
           modal(tr("Recorded authorization", "Autorização registrada"), stack(node("p", {},
             authorization.actor, " · ", format(authorization.maximum), " · ",
             new Date(authorization.authorized_at * 1000).toLocaleString()), node("pre", {}, json(authorization.requests))));
-        }),
-        job.uncertain > 0 && button(tr("Record verified charge", "Registrar cobrança verificada"), confirmSettlement),
-        job.remote && job.status === "FAILED" && button(tr("Check provider status", "Consultar estado no provedor"),
-          () => mutate(path("/jobs/" + job.id + "/reconcile"), "POST"))));
+        })));
     }), !project.jobs.length && small(tr("No jobs yet", "Nenhum trabalho ainda")));
 }
 
