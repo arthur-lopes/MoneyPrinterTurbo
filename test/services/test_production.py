@@ -338,6 +338,50 @@ def paid(
     store.budget(actor, pid, m.Budget(scope="project", limit=budget, confirmed=True))
 
 
+def test_research_revision_preconditions_preserve_source_catalog(sandbox):
+    store, actor, pid = sandbox
+    owner = {"Authorization": "Bearer " + "a" * 32}
+    other = {"Authorization": "Bearer " + "b" * 32}
+    endpoint = f"/api/projects/{pid}/research"
+    payload = {
+        "sources": [
+            {"title": "Archive A", "url": "https://example.org/a", "excerpt": "Verified note."}
+        ],
+        "claims": [{"text": "A source-backed claim.", "category": "verified", "sources": [1]}],
+    }
+    app = create_app(
+        store.directory, {"a" * 32: actor, "b" * 32: "another"}, worker_enabled=False
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        first = client.post(endpoint, json=payload, headers={**owner, "If-None-Match": "*"})
+        first.raise_for_status()
+        assert first.headers["etag"] == f'"{first.json()["id"]}"'
+        assert client.post(
+            endpoint, json=payload, headers={**owner, "If-None-Match": "*"}
+        ).status_code == 412
+        edited = {
+            **payload,
+            "sources": [{**payload["sources"][0], "title": "Archive B"}],
+        }
+        second = client.post(
+            endpoint, json=edited, headers={**owner, "If-Match": first.headers["etag"]}
+        )
+        second.raise_for_status()
+        assert second.headers["etag"] == f'"{second.json()["id"]}"'
+        assert client.post(
+            endpoint, json=payload, headers={**owner, "If-Match": first.headers["etag"]}
+        ).status_code == 412
+        assert client.post(
+            endpoint, json=payload, headers={**other, "If-Match": second.headers["etag"]}
+        ).status_code == 404
+        assert head(store, pid, "research")["id"] == second.json()["id"]
+        legacy = client.post(endpoint, json=payload, headers=owner).raise_for_status()
+        assert legacy.json()["seq"] == second.json()["seq"] + 1
+        snapshot = store.snapshot(actor, pid)
+        retained = [item["data"] for item in snapshot["versions"] if item["slot"] == "research"]
+        assert retained == [payload, edited, payload]
+
+
 def test_scene_evidence_preserves_original_research_and_detects_citation_changes(
     sandbox,
 ):

@@ -618,11 +618,28 @@ def create_app(
             db.execute("UPDATE projects SET data=? WHERE id=?", (encode(data), pid))
             return {"defaults": data["defaults"]}
 
+    def check_document_revision(current, request, document):
+        etag = f'"{current["id"]}"' if current else None
+        match = request.headers.get("If-Match")
+        if (match is not None and match != etag) or (
+            request.headers.get("If-None-Match") == "*" and current
+        ):
+            raise RuleError(f"The saved {document} changed in another session.", 412)
+
     @app.post("/api/projects/{pid}/research")
-    def research(pid: m.Id, body: m.Research, actor=Depends(authenticated)):
+    def research(
+        pid: m.Id,
+        body: m.Research,
+        request: Request,
+        response: Response,
+        actor=Depends(authenticated),
+    ):
         with store.transaction() as db:
             store.project(db, actor, pid)
-            return store.add(db, pid, "research", "research", body.model_dump())
+            check_document_revision(store.head(db, pid, "research"), request, "research")
+            item = store.add(db, pid, "research", "research", body.model_dump())
+            response.headers["ETag"] = f'"{item["id"]}"'
+            return item
 
     @app.post("/api/projects/{pid}/script")
     def script(
@@ -634,13 +651,7 @@ def create_app(
     ):
         with store.transaction() as db:
             store.project(db, actor, pid)
-            current = store.head(db, pid, "script")
-            etag = f'"{current["id"]}"' if current else None
-            match = request.headers.get("If-Match")
-            if (match is not None and match != etag) or (
-                request.headers.get("If-None-Match") == "*" and current
-            ):
-                raise RuleError("The saved script changed in another session.", 412)
+            check_document_revision(store.head(db, pid, "script"), request, "script")
             revision = request.headers.get("X-Research-Revision")
             if revision is not None:
                 research_head = store.head(db, pid, "research")

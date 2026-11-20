@@ -170,7 +170,7 @@ async function refresh(redraw = true) {
   if (redraw) render();
 }
 
-async function changeProject(id) {
+async function changeProject(id, initialView = "dashboard") {
   projectId = id;
   sessionStorage.setItem("mpt-production-project", id);
   selected = new Set();
@@ -181,8 +181,9 @@ async function changeProject(id) {
   experimentVersion = null;
   youtubeVersion = null;
   selectedClip = 0;
-  page = "dashboard";
+  page = initialView;
   await refresh();
+  if (projectId === id && page === initialView) ui("workspace").focus();
 }
 
 async function mutate(url, method, data) {
@@ -208,10 +209,10 @@ function review(items, status) {
   ]);
 }
 
-function reviewControls(item) {
+function reviewControls(item, approveLabel = tr("Approve", "Aprovar")) {
   if (!item?.current || !item.fresh || item.status === "APPROVED") return null;
   return row(
-    button(tr("Approve", "Aprovar"), () => review([item], "APPROVED"), true),
+    button(approveLabel, () => review([item], "APPROVED"), true),
     button(tr("Reject", "Rejeitar"), () => review([item], "REJECTED")),
     button(tr("Request revision", "Solicitar revisão"), () => review([item], "REVISION_REQUESTED")));
 }
@@ -459,7 +460,7 @@ function createEditorialProject(episode) {
     button(tr("Create draft project", "Criar projeto em rascunho"), async () => {
       const {id} = await api("/api/catalog/episodes/" + episode.id + "/project", "POST", {localize: localization.checked});
       ui("dialog").close();
-      await changeProject(id);
+      await changeProject(id, "research");
     }, true),
   ]);
 }
@@ -481,14 +482,17 @@ function generalProjectForm() {
           const result = await api("/api/projects", "POST", {title: name.value, topic: topic.value, audience: audience.value,
             tone: tone.value, duration: Number(duration.value), structure: structure.value.split("\n").map(v => v.trim()).filter(Boolean),
             languages: langs.value.split(","), currency: currency.value});
-          await changeProject(result.id);
+          await changeProject(result.id, "research");
         }, event.submitter);
       },
     }, label(tr("Project title", "Título do projeto"), name), label(tr("Topic", "Tema"), topic),
-    label(tr("Target audience", "Público-alvo"), audience), label(tr("Tone", "Tom"), tone),
+    label(tr("Target audience", "Público-alvo"), audience),
     label(tr("Target duration (seconds)", "Duração desejada (segundos)"), duration),
-    label(tr("Narrative structure · one section per line", "Estrutura narrativa · uma seção por linha"), structure),
-    label(tr("Languages · original first", "Idiomas · original primeiro"), langs), label(tr("Currency", "Moeda"), currency),
+    label(tr("Languages · original first", "Idiomas · original primeiro"), langs),
+    node("details", {}, node("summary", {}, tr("Tone, structure and currency", "Tom, estrutura e moeda")),
+      stack(label(tr("Tone", "Tom"), tone),
+        label(tr("Narrative structure · one section per line", "Estrutura narrativa · uma seção por linha"), structure),
+        label(tr("Currency", "Moeda"), currency))),
     node("button", {class: "primary", type: "submit"}, tr("Create project", "Criar projeto")));
 }
 
@@ -554,16 +558,17 @@ function hyphotenicProjectForm(profile) {
         languages: languages.value.split(","),
         style: {aspect: aspect.value, art_direction: direction.value, palette: palette.value, restrictions: restrictions.value},
       });
-      await changeProject(id);
+      await changeProject(id, "research");
     }, event.submitter);
   }},
   label(tr("Series or format", "Série ou formato"), series),
   label(tr("Public episode title", "Título público do episódio"), publicTitle),
   small(tr("Internal title", "Título interno") + " · " + profile.title_prefix.trimEnd() + " […]"),
   label(tr("Central question", "Pergunta central"), topic),
-  label(tr("Changed condition", "Condição alterada"), changed),
-  label(tr("Conditions that stay the same", "Condições que permanecem"), unchanged),
-  label(tr("Scope", "Escopo"), scope),
+  node("details", {}, node("summary", {}, tr("Scenario assumptions and scope", "Premissas e escopo do cenário")),
+    stack(label(tr("Changed condition", "Condição alterada"), changed),
+      label(tr("Conditions that stay the same", "Condições que permanecem"), unchanged),
+      label(tr("Scope", "Escopo"), scope))),
   node("details", {}, node("summary", {}, tr("Available sources", "Fontes disponíveis")), stack(sourceFields, addSource)),
   label(tr("Target duration (seconds)", "Duração desejada (segundos)"), duration),
   label(tr("Narrative structure · one section per line", "Estrutura narrativa · uma seção por linha"), structure),
@@ -720,21 +725,43 @@ function citationPicker(sources, selected, changed) {
 }
 
 function researchView() {
-  const item = current("research");
-  const initial = {sources: item?.data.sources || [], claims: item?.data.claims || []};
+  const target = projectId;
+  let item = current("research");
+  let initial = {sources: item?.data.sources || [], claims: item?.data.claims || []};
   const {sources, claims} = structuredClone(initial);
   const provider = select([["local", tr("Local worksheet", "Ficha local")], codexOption(), apiOption],
     project.data.defaults?.research || "local");
   const checklist = project.data.profile?.research_checklist;
   const sourceList = stack(), claimList = stack();
-  const reviewBox = stack(reviewControls(item));
+  const approveLabel = tr("Approve research", "Aprovar pesquisa");
+  const reviewBox = stack(reviewControls(item, approveLabel));
+  reviewBox.id = "research-review";
+  const continueToScript = button(tr("Continue to script", "Continuar para o roteiro"), () => navigate("scripts"), true);
+  const recovery = stack();
+  recovery.hidden = true;
+  let revisionBadge = assetBadge(item);
   const state = node("small", {role: "status"});
+  const active = () => sourceList.isConnected && projectId === target && page === "research";
   const updateStatus = () => {
     const dirty = json(initial) !== json({sources, claims});
     state.textContent = dirty ? tr("Research has unsaved changes.", "A pesquisa tem alterações não salvas.") : "";
-    reviewBox.hidden = dirty;
-    if (dirty) editing = true;
+    reviewBox.hidden = dirty || !recovery.hidden;
+    continueToScript.hidden = dirty || !ready(item) || !recovery.hidden;
+    if (dirty || !recovery.hidden) editing = true;
   };
+
+  function showConflict() {
+    const notice = node("p", {role: "status", tabindex: -1}, tr(
+      "Another session saved a research revision. Your edits are still in this tab.",
+      "Outra sessão salvou uma revisão da pesquisa. Seus ajustes continuam nesta aba."));
+    recovery.replaceChildren(notice, node("a", {
+      href: "/?project=" + target + "&view=research", target: "_blank", rel: "noopener noreferrer",
+    }, tr("Open saved research in a new tab", "Abrir pesquisa salva em nova aba")));
+    recovery.hidden = false;
+    updateStatus();
+    notice.focus();
+  }
+
   const save = button(tr("Save research revision", "Salvar revisão da pesquisa"), async () => {
     for (const claim of claims) {
       if (!claim.text.trim()) throw new Error(tr("Enter the text of each claim.", "Informe o texto de cada afirmação."));
@@ -742,8 +769,37 @@ function researchView() {
         throw new Error(tr("Link a source to each verified claim.", "Vincule uma fonte a cada afirmação verificada."));
       }
     }
-    await mutate(path("/research"), "POST", {sources, claims});
-    notify(tr("Research revision saved.", "Revisão da pesquisa salva."));
+    const draft = json({sources, claims});
+    const headers = item ? {"If-Match": '"' + item.id + '"'} : {"If-None-Match": "*"};
+    try {
+      const saved = await api(path("/research"), "POST", JSON.parse(draft), headers);
+      if (!active()) return;
+      item = saved;
+      initial = {sources: saved.data.sources, claims: saved.data.claims};
+      await refresh(false);
+      if (!active()) return;
+      if (current("research")?.id !== saved.id) {
+        showConflict();
+        return;
+      }
+      if (json({sources, claims}) === draft) {
+        render();
+        ui("research-review")?.querySelector("button")?.focus();
+        notify(tr("Research revision saved.", "Revisão da pesquisa salva."));
+      } else {
+        recovery.hidden = true;
+        const savedBadge = assetBadge(saved);
+        revisionBadge.replaceWith(savedBadge);
+        revisionBadge = savedBadge;
+        reviewBox.replaceChildren(reviewControls(saved, approveLabel));
+        updateStatus();
+        notify(tr("Revision saved. Newer edits are still in the form.",
+          "Revisão salva. As alterações feitas depois continuam no formulário."));
+      }
+    } catch (error) {
+      if (error.status !== 412) throw error;
+      if (active()) showConflict();
+    }
   }, true);
 
   function sourceForm(index) {
@@ -815,7 +871,8 @@ function researchView() {
     claimList.lastElementChild.querySelector("textarea").focus();
   });
   redraw();
-  return stack(title(tr("Research", "Pesquisa"), assetBadge(item)),
+  return stack(title(tr("Research", "Pesquisa"), revisionBadge), recovery,
+    continueToScript,
     checklist && node("ul", {}, checklist.map(entry => node("li", {}, entry))),
     grid(card(node("h2", {}, tr("Sources", "Fontes")), sourceList, addSource),
       card(node("h2", {}, tr("Research claims", "Afirmações da pesquisa")), claimList, addClaim)),
@@ -918,7 +975,14 @@ function scriptsView() {
     narration: project.data.topic, category: "uncertain", sources: []}];
   let sections;
   const sourceReview = new Set();
-  const reviewBox = stack(reviewControls(item));
+  const approveLabel = tr("Approve script", "Aprovar roteiro");
+  const reviewBox = stack(reviewControls(item, approveLabel));
+  const rough = roughCutAction();
+  const researchGate = row(node("p", {}, tr(
+    "Approve the research revision to use its sources in the script.",
+    "Aprove a revisão da pesquisa para usar suas fontes no roteiro.")),
+    node("a", {href: "/?project=" + target + "&view=research", target: "_blank", rel: "noopener noreferrer"},
+      tr("Open research in a new tab", "Abrir pesquisa em nova aba")));
   function rebind(previous) {
     const citationKeys = catalog.map(identity);
     for (const section of sections) {
@@ -941,7 +1005,10 @@ function scriptsView() {
   }
   load(item);
   const updateApproval = () => {
-    reviewBox.hidden = sourceReview.size > 0 || json(item?.data.sections) !== json(sections);
+    const readyToReview = !sourceReview.size && json(item?.data.sections) === json(sections);
+    researchGate.hidden = ready(research);
+    reviewBox.hidden = !readyToReview;
+    if (rough) rough.hidden = !readyToReview;
   };
   const provider = select([["local", tr("Local outline", "Estrutura local")], codexOption(), apiOption], project.data.defaults?.script || "local");
   const instructions = area("", {placeholder: tr("Variation or revision instructions", "Instruções para variação ou revisão")});
@@ -1039,18 +1106,19 @@ function scriptsView() {
   }
   fields();
   const permanent = project.data.profile?.script_instructions;
-  return stack(title(tr("Scripts", "Roteiros"), assetBadge(item)),
+  return stack(title(tr("Scripts", "Roteiros"), assetBadge(item)), researchGate,
     permanent && node("details", {}, node("summary", {},
       tr("Permanent script instructions", "Instruções permanentes de roteiro")),
       permanent.split("\n\n").map(text => node("p", {}, text))),
-    roughCutAction(),
-    card(small(tr("Pay off the opening question. Give each still a continuous shot and use motion to reveal a useful detail.",
+    rough,
+    node("details", {}, node("summary", {}, tr("Generate or revise a script", "Gerar ou revisar roteiro")),
+      card(small(tr("Pay off the opening question. Give each still a continuous shot and use motion to reveal a useful detail.",
       "Responda à pergunta da abertura. Dê a cada imagem um plano contínuo e use movimento para revelar um detalhe relevante.")),
       row(label(tr("Provider", "Provedor"), provider), label(tr("Instructions", "Instruções"), instructions)),
       row(button(tr("Estimate new variation", "Estimar nova versão"), () =>
         quote([{operation: "script", provider: provider.value, instructions: instructions.value}])),
       item && button(tr("Estimate AI revision", "Estimar revisão por IA"), () =>
-        quote([{operation: "script", provider: provider.value, instructions: instructions.value, version: item.id}])))),
+        quote([{operation: "script", provider: provider.value, instructions: instructions.value, version: item.id}]))))),
     recovery, form, row(button(tr("Add section", "Adicionar seção"), () => {
       sections.push({...fallback[0], key: crypto.randomUUID()});
       fields();
