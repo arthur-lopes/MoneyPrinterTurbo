@@ -2877,46 +2877,74 @@ async function proposalsView() {
     const language = select(languages.map(code => [code, names.of(code)]),
       languages.includes(preferred) ? preferred : languages[0]);
     const playerHost = node("div", {class: "preview-stage"});
+    const cuts = [
+      ["saved", tr("Saved cut", "Corte salvo")], ["proposed", tr("Proposed cut", "Corte proposto")],
+    ].map(([cut, name]) => [cut, node("button", {
+      type: "button", "aria-pressed": "false", onclick: () => loadPreview(cut),
+    }, name)]);
+    const comparison = node("div", {class: "row proposal-comparison", role: "group",
+      "aria-label": tr("Compare cuts", "Comparar cortes")}, cuts.map(([, control]) => control));
     const details = node("details", {name: "proposal-previews"},
-      node("summary", {}, tr("Preview proposed cut", "Assistir ao corte proposto")),
-      stack(languages.length > 1 && label(tr("Preview language", "Idioma da prévia"), language), playerHost));
-    let player;
+      node("summary", {}, tr("Compare cuts", "Comparar cortes")),
+      stack(comparison, languages.length > 1 && label(tr("Preview language", "Idioma da prévia"), language), playerHost));
+    const changed = new Set(proposal.plan.diff.map(item => item.scene));
+    let player, position, variant = "proposed", requests = 0;
+    function showVariant(cut) {
+      cuts.forEach(([value, control]) => control.setAttribute("aria-pressed", String(value === cut)));
+    }
+    function mountPlayer() {
+      activeScenePreview?.dispose();
+      player = activeScenePreview = createScenePreview(() => {});
+      playerHost.replaceChildren(player.element);
+    }
     function closePreview() {
+      requests++;
       if (player && activeScenePreview === player) {
         player.dispose();
         activeScenePreview = null;
       }
       player = null;
+      position = null;
+      variant = "proposed";
+      showVariant(null);
       playerHost.replaceChildren();
     }
-    async function loadPreview() {
-      closePreview();
-      activeScenePreview?.dispose();
-      const requestedPlayer = createScenePreview(() => {});
-      player = activeScenePreview = requestedPlayer;
-      playerHost.append(player.element);
-      player.updating();
-      const isOpen = () => details.isConnected && details.open && activeScenePreview === requestedPlayer;
+    async function loadPreview(cut) {
+      const request = ++requests;
+      variant = cut;
+      if (!player || activeScenePreview !== player) mountPlayer();
+      const requestedPlayer = player;
+      requestedPlayer.pause();
+      const previousPosition = requestedPlayer.position();
+      position = previousPosition || position;
+      requestedPlayer.updating();
+      const isCurrent = () => details.isConnected && details.open &&
+        request === requests && activeScenePreview === requestedPlayer;
       try {
-        const plan = await api(endpoint + "/" + proposal.id + "/preview?language=" + encodeURIComponent(language.value));
-        if (isOpen()) {
-          const changed = new Set(proposal.plan.diff.map(item => item.scene));
-          requestedPlayer.apply(plan, plan.clips.find(clip => changed.has(clip.scene))?.scene);
+        const query = new URLSearchParams({language: language.value, cut});
+        const plan = await api(endpoint + "/" + proposal.id + "/preview?" + query);
+        if (isCurrent()) {
+          const scene = position?.scene ?? plan.clips.find(clip => changed.has(clip.scene))?.scene;
+          // Native subtitle renderers may retain captions from a paused source.
+          if (previousPosition) mountPlayer();
+          player.apply(plan, scene, position?.offset);
+          showVariant(cut);
         }
       } catch (error) {
-        if (isOpen()) {
+        if (isCurrent()) {
+          showVariant(null);
           requestedPlayer.error(error.status === 409 ?
-            tr("The cut or its assets changed. Ask for a new proposal before reviewing it.",
-              "O corte ou seus materiais mudaram. Peça uma nova proposta para revisar.") :
-            tr("Could not load the preview. Close and reopen it to try again.",
-              "Não foi possível carregar a prévia. Feche e reabra para tentar novamente."));
+            tr("This cut or its assets changed. Refresh the page to check the proposal.",
+              "Este corte ou seus materiais mudaram. Atualize a página para conferir a proposta.") :
+            tr("Could not load the preview. Select a cut to try again.",
+              "Não foi possível carregar a prévia. Selecione um corte para tentar novamente."));
         }
       }
     }
-    language.addEventListener("change", loadPreview);
+    language.addEventListener("change", () => loadPreview(variant));
     details.addEventListener("toggle", () => {
       if (!details.isConnected || !details.open) closePreview();
-      else loadPreview();
+      else loadPreview(variant);
     });
     return details;
   }

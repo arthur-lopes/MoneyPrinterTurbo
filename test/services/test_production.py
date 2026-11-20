@@ -1427,11 +1427,18 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     assert preview["clips"][0]["trim"] == 0.1
     assert preview["clips"][0]["cues"][0]["text"] == "The revised subtitle."
     assert preview["clips"][1]["start"] == 3
+    saved_preview = owner.get(preview_url + "&cut=saved").raise_for_status().json()
+    assert saved_preview["clips"][0]["trim"] == 0
+    assert saved_preview["clips"][0]["cues"][0]["text"] == "The verified track."
+    assert saved_preview["clips"][1] == preview["clips"][1]
+    assert owner.get(preview_url + "&cut=proposed").json() == preview
+    assert owner.get(preview_url + "&cut=unknown").status_code == 422
     assert owner.get(preview_url.replace("en-US", "pt-BR")).status_code == 422
     assert owner.get(p + f"/proposals/{proposal['id']}").json() == proposal
     assert owner.get(p + "/timeline").json()["id"] == timeline["id"]
     assert len(store.snapshot(actor, pid)["jobs"]) == len(previous["jobs"])
     assert studio.get(preview_url, headers=bearer).status_code == 401
+    assert studio.get(preview_url + "&cut=saved", headers=bearer).status_code == 401
     wrong_owner = owner.get(
         preview_url, headers={"Authorization": "Bearer " + "b" * 32}
     )
@@ -1473,6 +1480,7 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     assert outdated.status_code == 409
     assert "assembly's inputs changed" in outdated.json()["detail"]
     assert owner.get(preview_url).status_code == 409
+    assert owner.get(preview_url + "&cut=saved").status_code == 409
     drifted = owner.get(independent_preview)
     assert drifted.status_code == 409
     assert "Proposal inputs changed" in drifted.json()["detail"]
@@ -1507,6 +1515,7 @@ def test_project_agent_proposes_an_idempotent_edit_for_human_review(sandbox):
     assert updated["id"] == applied["applied_revision"]
     assert updated["data"] == check.json()["timeline"]
     assert "base revision changed" in owner.get(independent_preview).json()["detail"]
+    assert owner.get(independent_preview + "&cut=saved").status_code == 409
     assert owner.get(preview_url).status_code == 409
     assert len(store.snapshot(actor, pid)["jobs"]) == len(previous["jobs"])
     assert (

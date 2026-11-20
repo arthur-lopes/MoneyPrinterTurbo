@@ -40,7 +40,7 @@ The launcher serves the workspace on `http://127.0.0.1:8765`. Use a same-origin 
 | GET /api/projects/{project}/timeline | Read the current saved timeline, or pass `?revision=<id>` for an earlier revision. |
 | PUT /api/projects/{project}/timeline | Save an editing draft, including clips, languages and output options. Returns the saved revision and its `ETag`. |
 | POST /api/projects/{project}/timeline/cut-preview | Compile the submitted `timeline` for one of its `language` tracks. Returns ordered scene timings, caption cues and project-scoped media URLs for interactive playback. |
-| GET /api/projects/{project}/proposals/{proposal}/preview?language=en-US | Play a pending proposal as the project owner. Returns the cut preview format after checking the saved base revision and the proposal's input fingerprint. This request leaves the saved timeline, jobs and costs unchanged. |
+| GET /api/projects/{project}/proposals/{proposal}/preview?language=en-US | Preview a pending proposal as the project owner. Use `cut=saved` to play its saved base revision, or `cut=proposed` (default) to play the suggested changes. Both variants check the base revision and the proposal input fingerprint. Both return the cut preview format and leave the saved timeline, jobs and costs unchanged. |
 | GET /api/projects/{project}/scenes/{scene}/evidence | Read the editorial categories and cited sources for the scene's recorded research revision. |
 | GET /api/projects/{project}/delivery | Review the current saved cut, its scene timings, exact material versions and output settings. |
 | POST /api/projects/{project}/delivery/materials | Approve the materials of selected `scenes` with the saved `revision`, matching `versions` and `confirmed: true`. |

@@ -317,6 +317,11 @@ function createScenePreview(onScene) {
 
   return {element, apply, clear: unload,
     playing: () => requested,
+    pause: halt,
+    position() {
+      const clip = scene();
+      return clip && {scene: clip.scene, offset: localTime()};
+    },
     jump(id) {
       if (!plan?.continuous) return;
       const index = plan.clips.findIndex(clip => clip.scene === id);
@@ -329,8 +334,9 @@ function createScenePreview(onScene) {
     },
     error(message) {
       unload();
-      frame.hidden = controls.hidden = true;
+      pending = false;
       status.textContent = message;
+      syncControls();
     },
     dispose() {
       lifecycle.abort();

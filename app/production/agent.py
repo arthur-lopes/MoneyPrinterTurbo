@@ -407,18 +407,21 @@ class AgentProjects:
             )
         return plan
 
-    def preview(self, actor, pid, ident, language):
+    def preview(self, actor, pid, ident, language, cut):
         with self.store.transaction(write=False) as db:
             project = self.store.project(db, actor, pid)
             proposal = self._proposal(db, pid, ident)
             if proposal["status"] != "PENDING":
                 raise RuleError("This proposal already has a decision")
             plan = self._checked_plan(db, project, proposal)
+            timeline = plan["timeline"]
+            if cut == "saved":
+                timeline = self.store.asset(db, pid, plan["base_revision"])["data"]
             return self.store._cut_preview(
                 db,
                 pid,
                 project["data"],
-                m.Timeline.model_validate(plan["timeline"]),
+                m.Timeline.model_validate(timeline),
                 language,
             )
 
